@@ -1,2 +1,3 @@
-# My_parser
-Compile Thoery Course Design
+# TJ_CompileTheory Task
+
+Compile Thoery Course Design, contains Lexer and Parser.
