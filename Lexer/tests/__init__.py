@@ -1,1 +1,0 @@
-# MiniLang test suite

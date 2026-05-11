@@ -1,0 +1,11 @@
+# Rust build artifacts
+target/
+
+# Cargo lockfile policy:
+# Keep Cargo.lock for binaries/apps, ignore for libraries.
+# This crate is used as a library by other crates in this workspace.
+Cargo.lock
+
+# Generated parser outputs
+*_ast.json
+tests/data/output.txt

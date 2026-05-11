@@ -1,0 +1,100 @@
+{
+  "kind": "Program",
+  "functions": [
+    {
+      "kind": "FunctionDecl",
+      "name": "demo",
+      "params": [
+        {
+          "kind": "Binding",
+          "mutable": true,
+          "name": "a",
+          "ty": {
+            "kind": "Named",
+            "name": "i32"
+          }
+        }
+      ],
+      "returnType": {
+        "kind": "Named",
+        "name": "i32"
+      },
+      "body": {
+        "kind": "Block",
+        "statements": [
+          {
+            "kind": "Let",
+            "binding": {
+              "kind": "Binding",
+              "mutable": true,
+              "name": "b",
+              "ty": null
+            },
+            "init": {
+              "kind": "Binary",
+              "left": {
+                "kind": "Identifier",
+                "name": "a"
+              },
+              "op": "Add",
+              "right": {
+                "kind": "Number",
+                "value": "1"
+              }
+            }
+          },
+          {
+            "kind": "Expr",
+            "expr": {
+              "kind": "If",
+              "condition": {
+                "kind": "Binary",
+                "left": {
+                  "kind": "Identifier",
+                  "name": "b"
+                },
+                "op": "Ge",
+                "right": {
+                  "kind": "Number",
+                  "value": "10"
+                }
+              },
+              "then_branch": {
+                "kind": "Block",
+                "statements": [
+                  {
+                    "kind": "Return",
+                    "value": {
+                      "kind": "Identifier",
+                      "name": "b"
+                    }
+                  }
+                ],
+                "tail": null
+              },
+              "else_branch": {
+                "kind": "None"
+              }
+            }
+          },
+          {
+            "kind": "Return",
+            "value": {
+              "kind": "Binary",
+              "left": {
+                "kind": "Identifier",
+                "name": "a"
+              },
+              "op": "Sub",
+              "right": {
+                "kind": "Number",
+                "value": "1"
+              }
+            }
+          }
+        ],
+        "tail": null
+      }
+    }
+  ]
+}
