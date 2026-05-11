@@ -8,3 +8,5 @@ axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+easy_lexer = { path = "../Easy_Lexer" }
+easy_parser = { path = "../Easy_Parser" }

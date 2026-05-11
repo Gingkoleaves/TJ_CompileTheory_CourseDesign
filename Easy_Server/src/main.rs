@@ -1,8 +1,3 @@
-#[path = "../../Lexer/src/lib.rs"]
-mod my_lexer;
-#[path = "../../Parser/src/lib.rs"]
-mod my_parser;
-
 use axum::{
     extract::Json,
     http::{header, StatusCode},
@@ -39,12 +34,23 @@ struct TokenView {
 }
 
 async fn serve_index() -> Response {
-    let html = include_str!("../../../index.html");
+        let html = r#"<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Easy Server</title>
+    </head>
+    <body>
+        <h1>Easy Server is running</h1>
+        <p>Use POST /api/analyze with JSON: {"source": "..."}</p>
+    </body>
+</html>"#;
     (StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
 }
 
 async fn analyze(Json(req): Json<AnalyzeRequest>) -> Json<AnalyzeResponse> {
-    let lex_result = my_lexer::lex(&req.source);
+    let lex_result = easy_lexer::lex(&req.source);
 
     let tokens: Vec<TokenView> = lex_result
         .tokens
@@ -70,7 +76,7 @@ async fn analyze(Json(req): Json<AnalyzeRequest>) -> Json<AnalyzeResponse> {
         .collect();
 
     let (ast, parse_error) = if lex_result.errors.is_empty() {
-        match my_parser::parse_program_ast(&lex_result.tokens) {
+        match easy_parser::parse_program_ast(&lex_result.tokens) {
             Ok(program) => (
                 serde_json::to_value(program).ok(),
                 None,
@@ -89,8 +95,8 @@ async fn analyze(Json(req): Json<AnalyzeRequest>) -> Json<AnalyzeResponse> {
     })
 }
 
-fn classify_token(kind: &my_lexer::TokenKind) -> String {
-    use my_lexer::TokenKind;
+fn classify_token(kind: &easy_lexer::TokenKind) -> String {
+    use easy_lexer::TokenKind;
 
     match kind {
         TokenKind::Keyword(_) => "关键字".to_string(),
