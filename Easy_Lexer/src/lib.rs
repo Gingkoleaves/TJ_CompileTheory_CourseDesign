@@ -295,13 +295,24 @@ impl<'a> Lexer<'a> {
                 let start = self.position();
                 self.advance();
                 self.advance();
+                let mut depth = 1;
                 let mut terminated = false;
                 while let Some(next) = self.peek() {
+                    if next == b'/' && self.peek_next() == Some(b'*') {
+                        self.advance();
+                        self.advance();
+                        depth += 1;
+                        continue;
+                    }
                     if next == b'*' && self.peek_next() == Some(b'/') {
                         self.advance();
                         self.advance();
-                        terminated = true;
-                        break;
+                        depth -= 1;
+                        if depth == 0 {
+                            terminated = true;
+                            break;
+                        }
+                        continue;
                     }
                     self.advance();
                 }

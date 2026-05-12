@@ -543,18 +543,18 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expression(&mut self) -> Result<Expr, ParseError> {
-        let left = self.parse_additive()?;
+        let mut expr = self.parse_additive()?;
 
-        if let Some(op) = self.match_comparison_op() {
+        while let Some(op) = self.match_comparison_op() {
             let right = self.parse_additive()?;
-            return Ok(Expr::Binary {
-                left: Box::new(left),
+            expr = Expr::Binary {
+                left: Box::new(expr),
                 op,
                 right: Box::new(right),
-            });
+            };
         }
 
-        Ok(left)
+        Ok(expr)
     }
 
     fn parse_additive(&mut self) -> Result<Expr, ParseError> {
