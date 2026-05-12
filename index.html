@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>类 Rust 语言编译器 - 词法/语法分析</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<style>
+  :root {
+    --bg: #1e1e2e;
+    --surface: #282840;
+    --surface2: #313155;
+    --border: #45475a;
+    --text: #cdd6f4;
+    --text-dim: #a6adc8;
+    --accent: #89b4fa;
+    --green: #a6e3a1;
+    --red: #f38ba8;
+    --yellow: #f9e2af;
+    --mauve: #cba6f7;
+    --peach: #fab387;
+    --teal: #94e2d5;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+  header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  header .subtitle {
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  #analyzeBtn {
+    margin-left: auto;
+    padding: 8px 24px;
+    background: var(--accent);
+    color: var(--bg);
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  #analyzeBtn:hover { opacity: 0.85; }
+  #analyzeBtn:active { opacity: 0.7; }
+  .main {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+  .panel {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .panel-left { width: 50%; border-right: 1px solid var(--border); }
+  .panel-right { width: 50%; }
+  .panel-title {
+    padding: 8px 16px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-dim);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .panel-title .tab {
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    color: var(--text-dim);
+    transition: all 0.15s;
+  }
+  .panel-title .tab.active {
+    background: var(--accent);
+    color: var(--bg);
+  }
+  .panel-title .tab:hover:not(.active) {
+    background: var(--border);
+  }
+  .panel-body {
+    flex: 1;
+    overflow: auto;
+  }
+  /* CodeMirror */
+  .CodeMirror {
+    height: 100% !important;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 14px;
+    background: var(--bg) !important;
+    color: var(--text) !important;
+  }
+  .CodeMirror-gutters {
+    background: var(--surface) !important;
+    border-right: 1px solid var(--border) !important;
+  }
+  .CodeMirror-linenumber { color: var(--text-dim) !important; }
+  .CodeMirror-cursor { border-left-color: var(--accent) !important; }
+  .CodeMirror-selected { background: rgba(137,180,250,0.15) !important; }
+  /* Token Table */
+  .token-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .token-table th {
+    position: sticky;
+    top: 0;
+    background: var(--surface2);
+    padding: 8px 12px;
+    text-align: left;
+    font-weight: 600;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    z-index: 1;
+  }
+  .token-table td {
+    padding: 5px 12px;
+    border-bottom: 1px solid rgba(69,71,90,0.4);
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  }
+  .token-table tr:hover td { background: var(--surface); }
+  .token-cat {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .cat-keyword { background: rgba(203,166,247,0.2); color: var(--mauve); }
+  .cat-ident   { background: rgba(137,180,250,0.2); color: var(--accent); }
+  .cat-number  { background: rgba(249,226,175,0.2); color: var(--yellow); }
+  .cat-op      { background: rgba(166,227,161,0.2); color: var(--green); }
+  .cat-delim   { background: rgba(148,226,213,0.2); color: var(--teal); }
+  .cat-bound   { background: rgba(250,179,135,0.2); color: var(--peach); }
+  .cat-special { background: rgba(243,139,168,0.2); color: var(--red); }
+  /* AST Tree */
+  .ast-tree {
+    padding: 12px;
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .ast-node {
+    cursor: pointer;
+    user-select: none;
+  }
+  .ast-node::before {
+    content: '▸ ';
+    color: var(--text-dim);
+    display: inline-block;
+    width: 16px;
+    transition: transform 0.15s;
+  }
+  .ast-node.open::before {
+    content: '▾ ';
+  }
+  .ast-children {
+    margin-left: 20px;
+    border-left: 1px solid var(--border);
+    padding-left: 8px;
+  }
+  .ast-children.collapsed { display: none; }
+  .ast-label { color: var(--accent); }
+  .ast-value { color: var(--yellow); }
+  .ast-leaf {
+    color: var(--text-dim);
+  }
+  /* Error */
+  .error-box {
+    padding: 12px 16px;
+    margin: 8px;
+    background: rgba(243,139,168,0.1);
+    border: 1px solid rgba(243,139,168,0.3);
+    border-radius: 6px;
+    color: var(--red);
+    font-size: 13px;
+  }
+  .tab-content { display: none; height: 100%; overflow: auto; }
+  .tab-content.active { display: block; }
+  .stats-bar {
+    padding: 6px 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Rust-Like Compiler</h1>
+  <span class="subtitle">词法分析 &amp; 语法分析可视化</span>
+  <button id="analyzeBtn" onclick="analyze()">分析 (Ctrl+Enter)</button>
+</header>
+
+<div class="main">
+  <div class="panel panel-left">
+    <div class="panel-title">源代码</div>
+    <div class="panel-body">
+      <textarea id="editor">fn main() {
+    let x: i32 = 10 + 20;
+    let y: i32 = x * 2;
+    if x > y {
+        return x;
+    } else {
+        return y;
+    }
+}</textarea>
+    </div>
+    <div class="stats-bar" id="sourceInfo">行数: 0 | 字符: 0</div>
+  </div>
+
+  <div class="panel panel-right">
+    <div class="panel-title">
+      <span>分析结果</span>
+      <span class="tab active" data-tab="tokens" onclick="switchTab('tokens')">Token 表</span>
+      <span class="tab" data-tab="ast" onclick="switchTab('ast')">AST 树</span>
+      <span class="tab" data-tab="errors" onclick="switchTab('errors')">错误</span>
+    </div>
+    <div class="panel-body">
+      <div id="tab-tokens" class="tab-content active">
+        <div class="placeholder">点击"分析"按钮查看词法分析结果</div>
+      </div>
+      <div id="tab-ast" class="tab-content">
+        <div class="placeholder">点击"分析"按钮查看语法分析结果</div>
+      </div>
+      <div id="tab-errors" class="tab-content">
+        <div class="placeholder">暂无错误</div>
+      </div>
+    </div>
+    <div class="stats-bar" id="resultInfo">就绪</div>
+  </div>
+</div>
+
+<script>
+let editor;
+
+// 初始化 CodeMirror
+document.addEventListener('DOMContentLoaded', () => {
+  editor = CodeMirror.fromTextArea(document.getElementById('editor'), {
+    lineNumbers: true,
+    indentUnit: 4,
+    tabSize: 4,
+    lineWrapping: true,
+    mode: 'text/plain',
+    extraKeys: {
+      'Ctrl-Enter': analyze,
+      'Cmd-Enter': analyze,
+    },
+  });
+  editor.on('change', updateSourceInfo);
+  updateSourceInfo();
+});
+
+function updateSourceInfo() {
+  const val = editor.getValue();
+  const lines = val.split('\n').length;
+  document.getElementById('sourceInfo').textContent = `行数: ${lines} | 字符: ${val.length}`;
+}
+
+// Tab 切换
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.toggle('active', t.id === 'tab-' + name));
+}
+
+// 分析请求
+async function analyze() {
+  const source = editor.getValue();
+  if (!source.trim()) return;
+
+  const btn = document.getElementById('analyzeBtn');
+  btn.textContent = '分析中...';
+  btn.disabled = true;
+
+  try {
+    const resp = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source }),
+    });
+    const data = await resp.json();
+
+    renderTokens(data.tokens || []);
+    renderAst(data.ast);
+    renderErrors(data.lexerErrors || [], data.parseError);
+
+    const tokCount = (data.tokens || []).length;
+    const lexErrCount = (data.lexerErrors || []).length;
+    const parseOk = !data.parseError;
+    let info = `Token: ${tokCount}`;
+    if (lexErrCount) info += ` | 词法错误: ${lexErrCount}`;
+    if (!parseOk) info += ` | 语法错误: 1`;
+    document.getElementById('resultInfo').textContent = info;
+
+  } catch (e) {
+    document.getElementById('resultInfo').textContent = '请求失败: ' + e.message;
+  } finally {
+    btn.textContent = '分析 (Ctrl+Enter)';
+    btn.disabled = false;
+  }
+}
+
+// Token 分类样式
+const CAT_CLASS = {
+  '关键字': 'cat-keyword',
+  '标识符': 'cat-ident',
+  '数字':   'cat-number',
+  '算符':   'cat-op',
+  '分隔符': 'cat-delim',
+  '界符':   'cat-bound',
+  '特殊符号': 'cat-special',
+  '结束符': 'cat-special',
+};
+
+function renderTokens(tokens) {
+  const container = document.getElementById('tab-tokens');
+  if (!tokens.length) {
+    container.innerHTML = '<div class="placeholder">无 Token</div>';
+    return;
+  }
+  let html = '<table class="token-table"><thead><tr>';
+  html += '<th>#</th><th>位置</th><th>Token</th><th>枚举</th><th>类型</th>';
+  html += '</tr></thead><tbody>';
+  tokens.forEach((t, i) => {
+    const cls = CAT_CLASS[t.type] || '';
+    html += `<tr>
+      <td>${i + 1}</td>
+      <td>${t.line}:${t.col}</td>
+      <td>${esc(t.value)}</td>
+      <td>${esc(t.typeEnum)}</td>
+      <td><span class="token-cat ${cls}">${esc(t.type)}</span></td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+// AST 渲染
+function renderAst(ast) {
+  const container = document.getElementById('tab-ast');
+  if (!ast) {
+    container.innerHTML = '<div class="placeholder">AST 不可用（可能存在语法错误）</div>';
+    return;
+  }
+  container.innerHTML = '<div class="ast-tree">' + renderAstNode(ast) + '</div>';
+  // 绑定折叠事件
+  container.querySelectorAll('.ast-node').forEach(node => {
+    node.addEventListener('click', e => {
+      e.stopPropagation();
+      const children = node.nextElementSibling;
+      if (children && children.classList.contains('ast-children')) {
+        children.classList.toggle('collapsed');
+        node.classList.toggle('open');
+      }
+    });
+  });
+  // 默认展开第一层
+  container.querySelectorAll('.ast-tree > .ast-node').forEach(n => {
+    n.classList.add('open');
+    const c = n.nextElementSibling;
+    if (c) c.classList.remove('collapsed');
+  });
+}
+
+function renderAstNode(node) {
+  if (!node || typeof node !== 'object') return '';
+
+  const kind = node.kind || 'Unknown';
+  const children = [];
+  const attrs = [];
+
+  for (const [key, val] of Object.entries(node)) {
+    if (key === 'kind') continue;
+    if (val && typeof val === 'object' && !Array.isArray(val) && val.kind) {
+      children.push({ key, node: val });
+    } else if (Array.isArray(val) && val.length > 0 && val[0] && typeof val[0] === 'object' && val[0].kind) {
+      children.push({ key, list: val });
+    } else if (Array.isArray(val) && val.length === 0) {
+      // 空数组，跳过
+    } else if (val !== null && val !== undefined) {
+      attrs.push({ key, val });
+    }
+  }
+
+  // 标签
+  let label = `<span class="ast-label">${esc(kind)}</span>`;
+  if (attrs.length) {
+    label += '(' + attrs.map(a => {
+      const v = typeof a.val === 'boolean' ? (a.val ? 'mut' : '') : a.val;
+      return v ? `<span class="ast-value">${esc(String(v))}</span>` : '';
+    }).filter(Boolean).join(', ') + ')';
+  }
+
+  const hasChildren = children.length > 0;
+  let html = `<span class="ast-node${hasChildren ? '' : ' ast-leaf'}">${label}</span>`;
+
+  if (hasChildren) {
+    html += '<div class="ast-children">';
+    for (const child of children) {
+      html += `<div><span style="color:var(--text-dim);font-size:12px">${esc(child.key)}:</span> `;
+      if (child.list) {
+        html += '<div style="margin-left:12px">';
+        child.list.forEach((item, i) => {
+          html += `<div>${renderAstNode(item)}</div>`;
+        });
+        html += '</div>';
+      } else {
+        html += renderAstNode(child.node);
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+
+  return html;
+}
+
+// 错误渲染
+function renderErrors(lexerErrors, parseError) {
+  const container = document.getElementById('tab-errors');
+  const errors = [...lexerErrors];
+  if (parseError) errors.push('[语法错误] ' + parseError);
+
+  if (!errors.length) {
+    container.innerHTML = '<div class="placeholder">暂无错误</div>';
+    return;
+  }
+  container.innerHTML = errors.map(e =>
+    `<div class="error-box">${esc(e)}</div>`
+  ).join('');
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>

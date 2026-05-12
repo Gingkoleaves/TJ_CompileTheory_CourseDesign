@@ -219,6 +219,7 @@ pub enum UnaryOp {
     Ref,
     RefMut,
     Deref,
+    Neg,
 }
 
 #[allow(dead_code)]
@@ -626,6 +627,14 @@ impl<'a> Parser<'a> {
             let expr = self.parse_unary()?;
             return Ok(Expr::Unary {
                 op: UnaryOp::Deref,
+                expr: Box::new(expr),
+            });
+        }
+
+        if self.match_simple(SimpleTokenKind::Minus) {
+            let expr = self.parse_postfix()?;
+            return Ok(Expr::Unary {
+                op: UnaryOp::Neg,
                 expr: Box::new(expr),
             });
         }
