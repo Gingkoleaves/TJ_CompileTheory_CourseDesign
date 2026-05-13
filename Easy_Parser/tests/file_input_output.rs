@@ -30,7 +30,15 @@ fn reads_lexer_input_file_and_produces_parser_output() {
 
     fs::write(&output_path, &output.stdout).expect("failed to write parser output file");
 
-    let actual = fs::read_to_string(&output_path).expect("failed to read parser output file");
-    let expected = fs::read_to_string(&expected_path).expect("failed to read expected output");
+    let actual = normalize_newlines(
+        &fs::read_to_string(&output_path).expect("failed to read parser output file"),
+    );
+    let expected = normalize_newlines(
+        &fs::read_to_string(&expected_path).expect("failed to read expected output"),
+    );
     assert_eq!(actual, expected);
+}
+
+fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n")
 }

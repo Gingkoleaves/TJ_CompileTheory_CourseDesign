@@ -168,8 +168,12 @@ pub enum Expr {
         base: Box<Expr>,
         field: String,
     },
-    Array(Vec<Expr>),
-    Tuple(Vec<Expr>),
+    Array {
+        elements: Vec<Expr>,
+    },
+    Tuple {
+        elements: Vec<Expr>,
+    },
     Block {
         block: Block,
     },
@@ -717,12 +721,14 @@ impl<'a> Parser<'a> {
                 SimpleTokenKind::RBracket,
                 "expected `]` after array literal",
             )?;
-            return Ok(Expr::Array(elements));
+            return Ok(Expr::Array { elements });
         }
 
         if self.match_simple(SimpleTokenKind::LParen) {
             if self.match_simple(SimpleTokenKind::RParen) {
-                return Ok(Expr::Tuple(Vec::new()));
+                return Ok(Expr::Tuple {
+                    elements: Vec::new(),
+                });
             }
 
             let first = self.parse_expression()?;
@@ -740,7 +746,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.expect_simple(SimpleTokenKind::RParen, "expected `)` after tuple literal")?;
-                return Ok(Expr::Tuple(elements));
+                return Ok(Expr::Tuple { elements });
             }
 
             self.expect_simple(SimpleTokenKind::RParen, "expected `)` after expression")?;
@@ -1016,14 +1022,14 @@ mod tests {
     use super::*;
     use easy_lexer::lex;
 
-    fn parse_ok(source: &str) {
+    fn parse_ok(source: &str) -> Program {
         let result = lex(source);
         assert!(
             result.errors.is_empty(),
             "unexpected lex errors: {:?}",
             result.errors
         );
-        parse_tokens(&result.tokens).unwrap();
+        parse_program_ast(&result.tokens).unwrap()
     }
 
     #[test]
@@ -1053,7 +1059,7 @@ mod tests {
 
     #[test]
     fn parses_extended_constructs() {
-        parse_ok(
+        let ast = parse_ok(
             r#"
             fn extra(mut a:i32) -> i32 {
                 let mut arr:[i32;3]=[1,2,3];
@@ -1073,6 +1079,7 @@ mod tests {
             }
             "#,
         );
+        serde_json::to_string_pretty(&ast).unwrap();
     }
 
     #[test]

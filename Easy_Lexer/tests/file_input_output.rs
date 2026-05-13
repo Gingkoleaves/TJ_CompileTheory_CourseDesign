@@ -28,7 +28,14 @@ fn reads_from_input_file_and_writes_output_file() {
 
     fs::write(&output_path, &output.stdout).expect("failed to write output file");
 
-    let actual = fs::read_to_string(&output_path).expect("failed to read output file");
-    let expected = fs::read_to_string(&expected_path).expect("failed to read expected output");
+    let actual =
+        normalize_newlines(&fs::read_to_string(&output_path).expect("failed to read output file"));
+    let expected = normalize_newlines(
+        &fs::read_to_string(&expected_path).expect("failed to read expected output"),
+    );
     assert_eq!(actual, expected);
+}
+
+fn normalize_newlines(text: &str) -> String {
+    text.replace("\r\n", "\n")
 }
