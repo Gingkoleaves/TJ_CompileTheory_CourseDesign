@@ -3,12 +3,32 @@
   "functions": [
     {
       "kind": "FunctionDecl",
-      "name": "demo",
+      "name": "helper",
+      "params": [],
+      "returnType": null,
+      "body": {
+        "kind": "Block",
+        "statements": [],
+        "tail": null
+      }
+    },
+    {
+      "kind": "FunctionDecl",
+      "name": "compute",
       "params": [
         {
           "kind": "Binding",
           "mutable": true,
-          "name": "a",
+          "name": "base",
+          "ty": {
+            "kind": "Named",
+            "name": "i32"
+          }
+        },
+        {
+          "kind": "Binding",
+          "mutable": false,
+          "name": "limit",
           "ty": {
             "kind": "Named",
             "name": "i32"
@@ -23,23 +43,415 @@
         "kind": "Block",
         "statements": [
           {
+            "kind": "Empty"
+          },
+          {
+            "kind": "Let",
+            "binding": {
+              "kind": "Binding",
+              "mutable": false,
+              "name": "plain",
+              "ty": null
+            },
+            "init": null
+          },
+          {
+            "kind": "Let",
+            "binding": {
+              "kind": "Binding",
+              "mutable": false,
+              "name": "typed",
+              "ty": {
+                "kind": "Named",
+                "name": "i32"
+              }
+            },
+            "init": null
+          },
+          {
             "kind": "Let",
             "binding": {
               "kind": "Binding",
               "mutable": true,
-              "name": "b",
-              "ty": null
+              "name": "value",
+              "ty": {
+                "kind": "Named",
+                "name": "i32"
+              }
             },
             "init": {
               "kind": "Binary",
               "left": {
                 "kind": "Identifier",
-                "name": "a"
+                "name": "base"
               },
               "op": "Add",
               "right": {
+                "kind": "Binary",
+                "left": {
+                  "kind": "Number",
+                  "value": "1"
+                },
+                "op": "Mul",
+                "right": {
+                  "kind": "Number",
+                  "value": "2"
+                }
+              }
+            }
+          },
+          {
+            "kind": "Let",
+            "binding": {
+              "kind": "Binding",
+              "mutable": false,
+              "name": "arr",
+              "ty": {
+                "kind": "Array",
+                "element": {
+                  "kind": "Named",
+                  "name": "i32"
+                },
+                "length": 3
+              }
+            },
+            "init": {
+              "kind": "Array",
+              "elements": [
+                {
+                  "kind": "Number",
+                  "value": "1"
+                },
+                {
+                  "kind": "Number",
+                  "value": "2"
+                },
+                {
+                  "kind": "Number",
+                  "value": "3"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "Let",
+            "binding": {
+              "kind": "Binding",
+              "mutable": true,
+              "name": "pair",
+              "ty": {
+                "kind": "Tuple",
+                "elements": [
+                  {
+                    "kind": "Named",
+                    "name": "i32"
+                  },
+                  {
+                    "kind": "Named",
+                    "name": "i32"
+                  }
+                ]
+              }
+            },
+            "init": {
+              "kind": "Tuple",
+              "elements": [
+                {
+                  "kind": "Index",
+                  "base": {
+                    "kind": "Identifier",
+                    "name": "arr"
+                  },
+                  "index": {
+                    "kind": "Number",
+                    "value": "0"
+                  }
+                },
+                {
+                  "kind": "Identifier",
+                  "name": "value"
+                }
+              ]
+            }
+          },
+          {
+            "kind": "Let",
+            "binding": {
+              "kind": "Binding",
+              "mutable": false,
+              "name": "unit",
+              "ty": {
+                "kind": "Unit"
+              }
+            },
+            "init": {
+              "kind": "Tuple",
+              "elements": []
+            }
+          },
+          {
+            "kind": "Let",
+            "binding": {
+              "kind": "Binding",
+              "mutable": false,
+              "name": "ref_value",
+              "ty": {
+                "kind": "Reference",
+                "mutable": false,
+                "ty": {
+                  "kind": "Named",
+                  "name": "i32"
+                }
+              }
+            },
+            "init": {
+              "kind": "Unary",
+              "op": "Ref",
+              "expr": {
+                "kind": "Identifier",
+                "name": "value"
+              }
+            }
+          },
+          {
+            "kind": "Let",
+            "binding": {
+              "kind": "Binding",
+              "mutable": true,
+              "name": "ref_mut",
+              "ty": {
+                "kind": "Reference",
+                "mutable": true,
+                "ty": {
+                  "kind": "Named",
+                  "name": "i32"
+                }
+              }
+            },
+            "init": {
+              "kind": "Unary",
+              "op": "RefMut",
+              "expr": {
+                "kind": "Identifier",
+                "name": "value"
+              }
+            }
+          },
+          {
+            "kind": "Assign",
+            "target": {
+              "kind": "Identifier",
+              "name": "plain"
+            },
+            "value": {
+              "kind": "Number",
+              "value": "0"
+            }
+          },
+          {
+            "kind": "Assign",
+            "target": {
+              "kind": "Identifier",
+              "name": "typed"
+            },
+            "value": {
+              "kind": "Binary",
+              "left": {
+                "kind": "Binary",
+                "left": {
+                  "kind": "Identifier",
+                  "name": "plain"
+                },
+                "op": "Add",
+                "right": {
+                  "kind": "Identifier",
+                  "name": "value"
+                }
+              },
+              "op": "Div",
+              "right": {
+                "kind": "Number",
+                "value": "2"
+              }
+            }
+          },
+          {
+            "kind": "Assign",
+            "target": {
+              "kind": "Field",
+              "base": {
+                "kind": "Identifier",
+                "name": "pair"
+              },
+              "field": "0"
+            },
+            "value": {
+              "kind": "Identifier",
+              "name": "typed"
+            }
+          },
+          {
+            "kind": "Assign",
+            "target": {
+              "kind": "Unary",
+              "op": "Deref",
+              "expr": {
+                "kind": "Identifier",
+                "name": "ref_mut"
+              }
+            },
+            "value": {
+              "kind": "Binary",
+              "left": {
+                "kind": "Field",
+                "base": {
+                  "kind": "Identifier",
+                  "name": "pair"
+                },
+                "field": "0"
+              },
+              "op": "Sub",
+              "right": {
                 "kind": "Number",
                 "value": "1"
+              }
+            }
+          },
+          {
+            "kind": "Expr",
+            "expr": {
+              "kind": "Index",
+              "base": {
+                "kind": "Identifier",
+                "name": "arr"
+              },
+              "index": {
+                "kind": "Number",
+                "value": "1"
+              }
+            }
+          },
+          {
+            "kind": "Expr",
+            "expr": {
+              "kind": "Field",
+              "base": {
+                "kind": "Identifier",
+                "name": "pair"
+              },
+              "field": "1"
+            }
+          },
+          {
+            "kind": "Expr",
+            "expr": {
+              "kind": "Call",
+              "callee": {
+                "kind": "Identifier",
+                "name": "helper"
+              },
+              "args": []
+            }
+          },
+          {
+            "kind": "Expr",
+            "expr": {
+              "kind": "Call",
+              "callee": {
+                "kind": "Identifier",
+                "name": "helper"
+              },
+              "args": [
+                {
+                  "kind": "Identifier",
+                  "name": "value"
+                },
+                {
+                  "kind": "Index",
+                  "base": {
+                    "kind": "Identifier",
+                    "name": "arr"
+                  },
+                  "index": {
+                    "kind": "Number",
+                    "value": "2"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "kind": "Expr",
+            "expr": {
+              "kind": "Unary",
+              "op": "Neg",
+              "expr": {
+                "kind": "Identifier",
+                "name": "value"
+              }
+            }
+          },
+          {
+            "kind": "Expr",
+            "expr": {
+              "kind": "Unary",
+              "op": "Ref",
+              "expr": {
+                "kind": "Identifier",
+                "name": "value"
+              }
+            }
+          },
+          {
+            "kind": "Expr",
+            "expr": {
+              "kind": "Unary",
+              "op": "RefMut",
+              "expr": {
+                "kind": "Identifier",
+                "name": "value"
+              }
+            }
+          },
+          {
+            "kind": "Expr",
+            "expr": {
+              "kind": "Unary",
+              "op": "Deref",
+              "expr": {
+                "kind": "Identifier",
+                "name": "ref_mut"
+              }
+            }
+          },
+          {
+            "kind": "Expr",
+            "expr": {
+              "kind": "Block",
+              "block": {
+                "kind": "Block",
+                "statements": [
+                  {
+                    "kind": "Let",
+                    "binding": {
+                      "kind": "Binding",
+                      "mutable": false,
+                      "name": "t",
+                      "ty": {
+                        "kind": "Named",
+                        "name": "i32"
+                      }
+                    },
+                    "init": {
+                      "kind": "Number",
+                      "value": "1"
+                    }
+                  }
+                ],
+                "tail": {
+                  "kind": "Identifier",
+                  "name": "t"
+                }
               }
             }
           },
@@ -51,45 +463,335 @@
                 "kind": "Binary",
                 "left": {
                   "kind": "Identifier",
-                  "name": "b"
+                  "name": "value"
                 },
                 "op": "Ge",
                 "right": {
-                  "kind": "Number",
-                  "value": "10"
+                  "kind": "Identifier",
+                  "name": "limit"
                 }
               },
               "then_branch": {
                 "kind": "Block",
                 "statements": [
                   {
-                    "kind": "Return",
-                    "value": {
+                    "kind": "Assign",
+                    "target": {
                       "kind": "Identifier",
-                      "name": "b"
+                      "name": "value"
+                    },
+                    "value": {
+                      "kind": "Binary",
+                      "left": {
+                        "kind": "Identifier",
+                        "name": "value"
+                      },
+                      "op": "Sub",
+                      "right": {
+                        "kind": "Number",
+                        "value": "1"
+                      }
                     }
                   }
                 ],
                 "tail": null
               },
               "else_branch": {
-                "kind": "None"
+                "kind": "ElseIf",
+                "expr": {
+                  "kind": "If",
+                  "condition": {
+                    "kind": "Binary",
+                    "left": {
+                      "kind": "Identifier",
+                      "name": "value"
+                    },
+                    "op": "Ne",
+                    "right": {
+                      "kind": "Number",
+                      "value": "0"
+                    }
+                  },
+                  "then_branch": {
+                    "kind": "Block",
+                    "statements": [
+                      {
+                        "kind": "Assign",
+                        "target": {
+                          "kind": "Identifier",
+                          "name": "value"
+                        },
+                        "value": {
+                          "kind": "Binary",
+                          "left": {
+                            "kind": "Identifier",
+                            "name": "value"
+                          },
+                          "op": "Add",
+                          "right": {
+                            "kind": "Number",
+                            "value": "1"
+                          }
+                        }
+                      }
+                    ],
+                    "tail": null
+                  },
+                  "else_branch": {
+                    "kind": "Block",
+                    "block": {
+                      "kind": "Block",
+                      "statements": [
+                        {
+                          "kind": "Return",
+                          "value": null
+                        }
+                      ],
+                      "tail": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "kind": "While",
+            "condition": {
+              "kind": "Binary",
+              "left": {
+                "kind": "Identifier",
+                "name": "value"
+              },
+              "op": "Gt",
+              "right": {
+                "kind": "Number",
+                "value": "0"
+              }
+            },
+            "body": {
+              "kind": "Block",
+              "statements": [
+                {
+                  "kind": "Expr",
+                  "expr": {
+                    "kind": "If",
+                    "condition": {
+                      "kind": "Binary",
+                      "left": {
+                        "kind": "Identifier",
+                        "name": "value"
+                      },
+                      "op": "Eq",
+                      "right": {
+                        "kind": "Number",
+                        "value": "2"
+                      }
+                    },
+                    "then_branch": {
+                      "kind": "Block",
+                      "statements": [
+                        {
+                          "kind": "Break",
+                          "value": null
+                        }
+                      ],
+                      "tail": null
+                    },
+                    "else_branch": {
+                      "kind": "None"
+                    }
+                  }
+                },
+                {
+                  "kind": "Assign",
+                  "target": {
+                    "kind": "Identifier",
+                    "name": "value"
+                  },
+                  "value": {
+                    "kind": "Binary",
+                    "left": {
+                      "kind": "Identifier",
+                      "name": "value"
+                    },
+                    "op": "Sub",
+                    "right": {
+                      "kind": "Number",
+                      "value": "1"
+                    }
+                  }
+                }
+              ],
+              "tail": null
+            }
+          },
+          {
+            "kind": "For",
+            "binding": {
+              "kind": "Binding",
+              "mutable": true,
+              "name": "i",
+              "ty": null
+            },
+            "iterable": {
+              "kind": "Binary",
+              "left": {
+                "kind": "Number",
+                "value": "0"
+              },
+              "op": "Range",
+              "right": {
+                "kind": "Identifier",
+                "name": "limit"
+              }
+            },
+            "body": {
+              "kind": "Block",
+              "statements": [],
+              "tail": {
+                "kind": "If",
+                "condition": {
+                  "kind": "Binary",
+                  "left": {
+                    "kind": "Identifier",
+                    "name": "i"
+                  },
+                  "op": "Le",
+                  "right": {
+                    "kind": "Number",
+                    "value": "1"
+                  }
+                },
+                "then_branch": {
+                  "kind": "Block",
+                  "statements": [
+                    {
+                      "kind": "Continue"
+                    }
+                  ],
+                  "tail": null
+                },
+                "else_branch": {
+                  "kind": "None"
+                }
+              }
+            }
+          },
+          {
+            "kind": "For",
+            "binding": {
+              "kind": "Binding",
+              "mutable": false,
+              "name": "item",
+              "ty": null
+            },
+            "iterable": {
+              "kind": "Identifier",
+              "name": "arr"
+            },
+            "body": {
+              "kind": "Block",
+              "statements": [
+                {
+                  "kind": "Expr",
+                  "expr": {
+                    "kind": "Identifier",
+                    "name": "item"
+                  }
+                }
+              ],
+              "tail": null
+            }
+          },
+          {
+            "kind": "Expr",
+            "expr": {
+              "kind": "Loop",
+              "body": {
+                "kind": "Block",
+                "statements": [
+                  {
+                    "kind": "Break",
+                    "value": null
+                  }
+                ],
+                "tail": null
+              }
+            }
+          },
+          {
+            "kind": "Let",
+            "binding": {
+              "kind": "Binding",
+              "mutable": false,
+              "name": "loop_value",
+              "ty": null
+            },
+            "init": {
+              "kind": "Loop",
+              "body": {
+                "kind": "Block",
+                "statements": [
+                  {
+                    "kind": "Break",
+                    "value": {
+                      "kind": "Number",
+                      "value": "7"
+                    }
+                  }
+                ],
+                "tail": null
+              }
+            }
+          },
+          {
+            "kind": "Let",
+            "binding": {
+              "kind": "Binding",
+              "mutable": false,
+              "name": "chosen",
+              "ty": null
+            },
+            "init": {
+              "kind": "If",
+              "condition": {
+                "kind": "Binary",
+                "left": {
+                  "kind": "Identifier",
+                  "name": "value"
+                },
+                "op": "Lt",
+                "right": {
+                  "kind": "Identifier",
+                  "name": "limit"
+                }
+              },
+              "then_branch": {
+                "kind": "Block",
+                "statements": [],
+                "tail": {
+                  "kind": "Identifier",
+                  "name": "value"
+                }
+              },
+              "else_branch": {
+                "kind": "Block",
+                "block": {
+                  "kind": "Block",
+                  "statements": [],
+                  "tail": {
+                    "kind": "Identifier",
+                    "name": "limit"
+                  }
+                }
               }
             }
           },
           {
             "kind": "Return",
             "value": {
-              "kind": "Binary",
-              "left": {
-                "kind": "Identifier",
-                "name": "a"
-              },
-              "op": "Sub",
-              "right": {
-                "kind": "Number",
-                "value": "1"
-              }
+              "kind": "Identifier",
+              "name": "chosen"
             }
           }
         ],
