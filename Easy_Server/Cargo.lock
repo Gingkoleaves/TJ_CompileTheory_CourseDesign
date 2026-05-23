@@ -93,6 +93,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "easy_analyzer"
+version = "0.1.0"
+dependencies = [
+ "easy_lexer",
+ "easy_parser",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "easy_lexer"
 version = "0.1.0"
 dependencies = [
@@ -118,6 +128,7 @@ name = "easy_server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "easy_analyzer",
  "easy_lexer",
  "easy_parser",
  "serde",

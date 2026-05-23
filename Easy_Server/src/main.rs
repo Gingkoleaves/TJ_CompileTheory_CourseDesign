@@ -21,6 +21,18 @@ struct AnalyzeResponse {
     lexer_errors: Vec<String>,
     #[serde(rename = "parseError")]
     parse_error: Option<String>,
+    #[serde(rename = "semanticErrors")]
+    semantic_errors: Vec<String>,
+    quadruples: Vec<QuadrupleView>,
+}
+
+#[derive(Serialize)]
+struct QuadrupleView {
+    index: usize,
+    op: String,
+    arg1: String,
+    arg2: String,
+    result: String,
 }
 
 #[derive(Serialize)]
@@ -64,16 +76,34 @@ async fn analyze(Json(req): Json<AnalyzeRequest>) -> Json<AnalyzeResponse> {
         })
         .collect();
 
-    let (ast, parse_error) = if lex_result.errors.is_empty() {
+    let (ast, parse_error, semantic_errors, quadruples) = if lex_result.errors.is_empty() {
         match easy_parser::parse_program_ast(&lex_result.tokens) {
-            Ok(program) => (
-                serde_json::to_value(program).ok(),
-                None,
-            ),
-            Err(error) => (None, Some(format!("{error}"))),
+            Ok(program) => {
+                let ast_json = serde_json::to_value(&program).ok();
+                let analysis = easy_analyzer::analyze(&program);
+                let sem_msgs: Vec<String> = analysis
+                    .semantic_errors
+                    .iter()
+                    .map(|e| format!("[语义错误] {}", e.message))
+                    .collect();
+                let quads: Vec<QuadrupleView> = analysis
+                    .quadruples
+                    .iter()
+                    .enumerate()
+                    .map(|(i, q)| QuadrupleView {
+                        index: i,
+                        op: q.op.clone(),
+                        arg1: q.arg1.clone(),
+                        arg2: q.arg2.clone(),
+                        result: q.result.clone(),
+                    })
+                    .collect();
+                (ast_json, None, sem_msgs, quads)
+            }
+            Err(error) => (None, Some(format!("{error}")), Vec::new(), Vec::new()),
         }
     } else {
-        (None, None)
+        (None, None, Vec::new(), Vec::new())
     };
 
     Json(AnalyzeResponse {
@@ -81,6 +111,8 @@ async fn analyze(Json(req): Json<AnalyzeRequest>) -> Json<AnalyzeResponse> {
         ast,
         lexer_errors,
         parse_error,
+        semantic_errors,
+        quadruples,
     })
 }
 
