@@ -77,22 +77,22 @@
 
 ---
 
-## 🔵 措辞 / 信息缺失
+## 🔵 措辞 / 信息缺失 ✅ 已修复
 
-### BUG #13 数组越界错误未带数组名
+### BUG #13 数组越界错误未带数组名  ✅
 - **文件**：`Easy_Analyzer/src/semantic.rs:851-853`
 - **现象**：`数组下标 5 越界，合法范围 [0,3)` 缺变量名
 
-### BUG #14 "调用未声明的函数"错误未带规则号
+### BUG #14 "调用未声明的函数"错误未带规则号  ✅
 - **文件**：`Easy_Analyzer/src/semantic.rs:767`
 - **现象**：对比其他错误都带"（规则 X.X）"
 
-### BUG #15 Server 无 CORS，file:// 打开 index.html 不工作
+### BUG #15 Server 无 CORS，file:// 打开 index.html 不工作  ✅
 - **文件**：`Easy_Server/src/main.rs:152-154`
 - **现象**：同源访问 OK；跨源/本地双击 html 失败
 - **严重度**：取决于使用方式
 
-### BUG #16 词法错误时跳过 parser，前端无原因提示
+### BUG #16 词法错误时跳过 parser，前端无原因提示  ✅
 - **文件**：`Easy_Server/src/main.rs:79`
 - **现象**："AST 不可用"无解释
 

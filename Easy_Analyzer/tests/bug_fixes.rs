@@ -100,6 +100,7 @@ fn bug7_duplicate_function_emits_single_ir() {
 fn bug8_non_unit_function_without_return_still_has_terminator() {
     // `fn f()->i32 { }` 之前不发任何 RETURN；修复后函数末尾必有 RETURN 终结子
     let r = run("fn f()->i32 { } fn main(){}");
+    // 取 fn f 的 IR 片段
     let start = r
         .quadruples
         .iter()
@@ -167,7 +168,7 @@ fn bug12_break_type_mismatch_skips_result_assign() {
         "应报多个 break 类型不一致：{:?}",
         r.semantic_errors
     );
-    // 第一个 break 发 =；第二个 break 应跳过 =，loop 内只发 1 次 (=, 1, _, t_result)
+    // 第一个 break 发 = ，第二个 break 应跳过 = ，因此 loop 内只发 1 次 (=, 1, _, t_result)
     let result_assigns = r
         .quadruples
         .iter()
@@ -175,7 +176,39 @@ fn bug12_break_type_mismatch_skips_result_assign() {
         .count();
     assert_eq!(
         result_assigns, 1,
-        "类型不一致的 break 不应再发 =，实际 result 赋值次数 {}：{:?}",
+        "类型不一致的 break 不应再发 = ，实际 result 赋值次数 {} ：{:?}",
         result_assigns, r.quadruples
+    );
+}
+
+#[test]
+fn bug13_array_oob_error_carries_name() {
+    // 数组越界错误必须带数组名 `a`
+    let r = run(
+        r#"
+        fn main() {
+            let a:[i32;3] = [1,2,3];
+            let x:i32 = a[5];
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("数组 `a`") && e.message.contains("越界")),
+        "越界错误应带数组名 `a`：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug14_undeclared_function_carries_rule_number() {
+    let r = run("fn main() { undef(); }");
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("未声明的函数") && e.message.contains("规则 3.5")),
+        "未声明函数错误应带（规则 3.5）：{:?}",
+        r.semantic_errors
     );
 }

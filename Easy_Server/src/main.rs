@@ -1,12 +1,13 @@
 use axum::{
     extract::Json,
-    http::{header, StatusCode},
+    http::{header, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Deserialize)]
 struct AnalyzeRequest {
@@ -104,7 +105,13 @@ async fn analyze(Json(req): Json<AnalyzeRequest>) -> Json<AnalyzeResponse> {
             Err(error) => (None, Some(format!("{error}")), Vec::new(), Vec::new()),
         }
     } else {
-        (None, None, Vec::new(), Vec::new())
+        // 词法阶段已失败：跳过 parser，但用 parse_error 告知前端原因，
+        // 避免出现"AST 不可用"却无解释。
+        let explain = format!(
+            "因 {} 个词法错误，已跳过语法与语义分析",
+            lex_result.errors.len()
+        );
+        (None, Some(explain), Vec::new(), Vec::new())
     };
 
     Json(AnalyzeResponse {
@@ -150,9 +157,16 @@ fn classify_token(kind: &easy_lexer::TokenKind) -> String {
 
 #[tokio::main]
 async fn main() {
+    // 允许任意源访问 /api/analyze，方便 file:// 双击 index.html 或自定义前端使用。
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers(Any);
+
     let app = Router::new()
         .route("/", get(serve_index))
-        .route("/api/analyze", post(analyze));
+        .route("/api/analyze", post(analyze))
+        .layer(cors);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     println!("Server running at http://{}", addr);

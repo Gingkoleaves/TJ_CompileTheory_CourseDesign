@@ -814,7 +814,7 @@ impl Analyzer {
 
         let sig = self.table.lookup_function(&name).cloned();
         let Some(sig) = sig else {
-            self.error(format!("调用未声明的函数 `{}`", name));
+            self.error(format!("调用未声明的函数 `{}`（规则 3.5）", name));
             for a in args {
                 self.gen_expr(a);
             }
@@ -898,9 +898,12 @@ impl Analyzer {
         if let (Some(len), Expr::Number { value }) = (len, index) {
             if let Ok(n) = value.parse::<isize>() {
                 if n < 0 || (n as usize) >= len {
+                    let name = root_identifier(base)
+                        .map(|s| format!("数组 `{}` ", s))
+                        .unwrap_or_default();
                     self.error(format!(
-                        "数组下标 {} 越界，合法范围 [0,{})（规则 8.3）",
-                        n, len
+                        "{}下标 {} 越界，合法范围 [0,{})（规则 8.3）",
+                        name, n, len
                     ));
                 }
             }
