@@ -98,4 +98,17 @@ impl SymbolTable {
     pub fn lookup_function(&self, name: &str) -> Option<&FunctionSig> {
         self.functions.get(name)
     }
+
+    pub fn current_scope_uninferred_names(&self) -> Vec<String> {
+        self.scopes
+            .last()
+            .map(|scope| {
+                scope
+                    .values()
+                    .filter(|sym| matches!(sym.ty, Type::Unknown))
+                    .map(|sym| sym.name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }

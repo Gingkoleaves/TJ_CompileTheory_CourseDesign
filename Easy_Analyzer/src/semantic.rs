@@ -3,6 +3,8 @@
 //! 覆盖 PDF 强制规则（0.1-0.3, 1.1-1.5, 2.0-2.2, 3.1-3.5, 4.1, 5.0, 5.1）
 //! 的全部静态语义检查，并对扩展规则做尽力而为的处理与 IR 生成。
 
+use std::collections::HashMap;
+
 use serde::Serialize;
 
 use easy_parser::{
@@ -41,9 +43,21 @@ impl ExprValue {
 }
 
 /// 函数级遍历状态：当前函数返回类型、循环嵌套深度。
+struct LoopExprCtx {
+    result_place: String,
+    break_type: Option<Type>,
+}
+
 struct FuncCtx {
     return_type: Type,
     loop_depth: usize,
+    loop_exprs: Vec<LoopExprCtx>,
+}
+
+#[derive(Default)]
+struct BorrowState {
+    immutable: usize,
+    mutable: usize,
 }
 
 pub struct Analyzer {
@@ -51,6 +65,7 @@ pub struct Analyzer {
     ir: IrBuilder,
     errors: Vec<SemanticError>,
     func_ctx: Option<FuncCtx>,
+    borrow_scopes: Vec<HashMap<String, BorrowState>>,
 }
 
 impl Analyzer {
@@ -60,6 +75,7 @@ impl Analyzer {
             ir: IrBuilder::new(),
             errors: Vec::new(),
             func_ctx: None,
+            borrow_scopes: vec![HashMap::new()],
         }
     }
 
@@ -69,6 +85,54 @@ impl Analyzer {
 
     fn error(&mut self, msg: impl Into<String>) {
         self.errors.push(SemanticError::new(msg));
+    }
+
+    fn push_scope(&mut self) {
+        self.table.push_scope();
+        self.borrow_scopes.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.table.pop_scope();
+        if self.borrow_scopes.len() > 1 {
+            self.borrow_scopes.pop();
+        }
+    }
+
+    fn register_borrow(&mut self, name: &str, mutable: bool) {
+        let existing_immutable = self
+            .borrow_scopes
+            .iter()
+            .map(|scope| scope.get(name).map(|state| state.immutable).unwrap_or(0))
+            .sum::<usize>();
+        let existing_mutable = self
+            .borrow_scopes
+            .iter()
+            .map(|scope| scope.get(name).map(|state| state.mutable).unwrap_or(0))
+            .sum::<usize>();
+
+        if mutable {
+            if existing_immutable > 0 || existing_mutable > 0 {
+                self.error(format!(
+                    "不能在已有引用存在时创建变量 `{}` 的可变引用（规则 6.3）",
+                    name
+                ));
+            }
+        } else if existing_mutable > 0 {
+            self.error(format!(
+                "不能在可变引用存在时创建变量 `{}` 的其他引用（规则 6.3）",
+                name
+            ));
+        }
+
+        if let Some(scope) = self.borrow_scopes.last_mut() {
+            let state = scope.entry(name.to_string()).or_default();
+            if mutable {
+                state.mutable += 1;
+            } else {
+                state.immutable += 1;
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -133,7 +197,7 @@ impl Analyzer {
         }
 
         // 进入函数作用域，登记形参
-        self.table.push_scope();
+        self.push_scope();
         for (pname, pty, pmut) in &sig.params {
             self.table.declare(VarSymbol::new(
                 pname.clone(),
@@ -147,6 +211,7 @@ impl Analyzer {
         let prev = self.func_ctx.replace(FuncCtx {
             return_type: return_type.clone(),
             loop_depth: 0,
+            loop_exprs: Vec::new(),
         });
 
         // 函数体（不再额外 push_scope，因为形参与本块同作用域）
@@ -171,8 +236,9 @@ impl Analyzer {
                 .emit("RETURN", PLACEHOLDER, PLACEHOLDER, PLACEHOLDER);
         }
 
+        self.check_current_scope_uninferred();
         self.func_ctx = prev;
-        self.table.pop_scope();
+        self.pop_scope();
         self.ir.emit("END_FUNC", &f.name, PLACEHOLDER, PLACEHOLDER);
     }
 
@@ -323,8 +389,24 @@ impl Analyzer {
                 }
             }
             Expr::Index { .. } | Expr::Field { .. } => {
-                // 非强制规则，仅生成简化 IR
+                if let Some(name) = root_identifier(target) {
+                    if let Some(sym) = self.table.lookup(name) {
+                        if !sym.mutable {
+                            self.error(format!(
+                                "不可变变量 `{}` 的元素不能被赋值（规则 8.3/9.3）",
+                                name
+                            ));
+                        }
+                    }
+                }
                 let tgt = self.gen_expr(target);
+                if tgt.ty.is_known() && value_val.ty.is_known() && !tgt.ty.compatible(&value_val.ty) {
+                    self.error(format!(
+                        "赋值目标类型 {} 与表达式类型 {} 不匹配",
+                        tgt.ty.display(),
+                        value_val.ty.display()
+                    ));
+                }
                 self.ir.emit("=", value_val.place, PLACEHOLDER, tgt.place);
             }
             _ => {
@@ -421,7 +503,7 @@ impl Analyzer {
             }
         };
 
-        self.table.push_scope();
+        self.push_scope();
         // 循环变量
         self.table.declare(VarSymbol::new(
             binding.name.clone(),
@@ -452,7 +534,7 @@ impl Analyzer {
         self.ir.emit("=", t2, PLACEHOLDER, &binding.name);
         self.ir.emit_goto(&label_start);
         self.ir.emit_label(&label_end);
-        self.table.pop_scope();
+        self.pop_scope();
     }
 
     fn gen_break(&mut self, value: Option<&Expr>) {
@@ -465,7 +547,33 @@ impl Analyzer {
             self.error("`break` 必须位于循环体内（规则 5.4）".to_string());
         }
         let v = value.map(|e| self.gen_expr(e));
-        let arg = v.map(|x| x.place).unwrap_or_else(|| PLACEHOLDER.to_string());
+        let arg = if let Some(v) = v {
+            let mut result_place = None;
+            let mut type_error = None;
+            if let Some(ctx) = self.func_ctx.as_mut().and_then(|ctx| ctx.loop_exprs.last_mut()) {
+                match &ctx.break_type {
+                    Some(ty) if ty.is_known() && v.ty.is_known() && !ty.compatible(&v.ty) => {
+                        type_error = Some((ty.clone(), v.ty.clone()));
+                    }
+                    None => ctx.break_type = Some(v.ty.clone()),
+                    _ => {}
+                }
+                result_place = Some(ctx.result_place.clone());
+            }
+            if let Some((expected, actual)) = type_error {
+                self.error(format!(
+                    "loop 表达式多个 break 类型不一致：{} vs {}（规则 7.4）",
+                    expected.display(),
+                    actual.display()
+                ));
+            }
+            if let Some(result_place) = result_place {
+                self.ir.emit("=", v.place.clone(), PLACEHOLDER, result_place);
+            }
+            v.place
+        } else {
+            PLACEHOLDER.to_string()
+        };
         self.ir.emit("BREAK", arg, PLACEHOLDER, PLACEHOLDER);
     }
 
@@ -484,7 +592,7 @@ impl Analyzer {
 
     /// 把一个语句块作为子语句处理（push 新作用域）。
     fn gen_block_stmt(&mut self, block: &Block) {
-        self.table.push_scope();
+        self.push_scope();
         for s in &block.statements {
             self.gen_stmt(s);
         }
@@ -492,7 +600,14 @@ impl Analyzer {
             // 作为语句的块：尾表达式只求值，结果丢弃
             self.gen_expr(tail);
         }
-        self.table.pop_scope();
+        self.check_current_scope_uninferred();
+        self.pop_scope();
+    }
+
+    fn check_current_scope_uninferred(&mut self) {
+        for name in self.table.current_scope_uninferred_names() {
+            self.error(format!("变量 `{}` 无法推断类型（规则 2.1）", name));
+        }
     }
 
     fn check_condition_type(&mut self, ty: &Type, ctx: &str) {
@@ -567,13 +682,17 @@ impl Analyzer {
                 self.ir.emit("NEG", v.place, PLACEHOLDER, &t);
                 ExprValue::new(Type::I32, t)
             }
-            UnaryOp::Ref => ExprValue::new(
-                Type::Ref { mutable: false, inner: Box::new(v.ty) },
-                format!("&{}", v.place),
-            ),
+            UnaryOp::Ref => {
+                if let Some(name) = root_identifier(inner) {
+                    self.register_borrow(name, false);
+                }
+                ExprValue::new(
+                    Type::Ref { mutable: false, inner: Box::new(v.ty) },
+                    format!("&{}", v.place),
+                )
+            }
             UnaryOp::RefMut => {
-                // 规则 6.3：仅能从 mut 变量取 &mut
-                if let Expr::Identifier { name } = inner {
+                if let Some(name) = root_identifier(inner) {
                     if let Some(sym) = self.table.lookup(name) {
                         if !sym.mutable {
                             self.error(format!(
@@ -582,6 +701,7 @@ impl Analyzer {
                             ));
                         }
                     }
+                    self.register_borrow(name, true);
                 }
                 ExprValue::new(
                     Type::Ref { mutable: true, inner: Box::new(v.ty) },
@@ -837,7 +957,7 @@ impl Analyzer {
     }
 
     fn gen_block_expr(&mut self, block: &Block) -> ExprValue {
-        self.table.push_scope();
+        self.push_scope();
         for s in &block.statements {
             self.gen_stmt(s);
         }
@@ -846,7 +966,7 @@ impl Analyzer {
         } else {
             ExprValue::new(Type::Unit, PLACEHOLDER.to_string())
         };
-        self.table.pop_scope();
+        self.pop_scope();
         result
     }
 
@@ -907,23 +1027,39 @@ impl Analyzer {
     fn gen_loop_expr(&mut self, body: &Block) -> ExprValue {
         let label_start = self.ir.new_label();
         let label_end = self.ir.new_label();
+        let result_place = self.ir.new_temp();
         self.ir.emit_label(&label_start);
         if let Some(ctx) = self.func_ctx.as_mut() {
             ctx.loop_depth += 1;
+            ctx.loop_exprs.push(LoopExprCtx {
+                result_place: result_place.clone(),
+                break_type: None,
+            });
         }
         self.gen_block_stmt(body);
-        if let Some(ctx) = self.func_ctx.as_mut() {
+        let break_type = if let Some(ctx) = self.func_ctx.as_mut() {
             ctx.loop_depth -= 1;
-        }
+            ctx.loop_exprs.pop().and_then(|loop_ctx| loop_ctx.break_type)
+        } else {
+            None
+        };
         self.ir.emit_goto(&label_start);
         self.ir.emit_label(&label_end);
-        ExprValue::new(Type::Unit, PLACEHOLDER.to_string())
+        ExprValue::new(break_type.unwrap_or(Type::Unit), result_place)
     }
 }
 
 impl Default for Analyzer {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn root_identifier(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Identifier { name } => Some(name),
+        Expr::Index { base, .. } | Expr::Field { base, .. } => root_identifier(base),
+        _ => None,
     }
 }
 
