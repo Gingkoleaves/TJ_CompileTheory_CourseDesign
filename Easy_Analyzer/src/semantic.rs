@@ -48,10 +48,18 @@ struct LoopExprCtx {
     break_type: Option<Type>,
 }
 
+struct LoopLabels {
+    /// 回到的标签：while/for 是 cond 标签；loop 是 body 起点标签。
+    start: String,
+    /// 跳出的标签：循环结构结束位置。
+    end: String,
+}
+
 struct FuncCtx {
     return_type: Type,
     loop_depth: usize,
     loop_exprs: Vec<LoopExprCtx>,
+    loop_labels: Vec<LoopLabels>,
 }
 
 #[derive(Default)]
@@ -212,6 +220,7 @@ impl Analyzer {
             return_type: return_type.clone(),
             loop_depth: 0,
             loop_exprs: Vec::new(),
+            loop_labels: Vec::new(),
         });
 
         // 函数体（不再额外 push_scope，因为形参与本块同作用域）
@@ -463,10 +472,15 @@ impl Analyzer {
 
         if let Some(ctx) = self.func_ctx.as_mut() {
             ctx.loop_depth += 1;
+            ctx.loop_labels.push(LoopLabels {
+                start: label_start.clone(),
+                end: label_end.clone(),
+            });
         }
         self.gen_block_stmt(body);
         if let Some(ctx) = self.func_ctx.as_mut() {
             ctx.loop_depth -= 1;
+            ctx.loop_labels.pop();
         }
 
         self.ir.emit_goto(&label_start);
@@ -522,10 +536,15 @@ impl Analyzer {
         self.ir.emit_if_false(&t, &label_end);
         if let Some(ctx) = self.func_ctx.as_mut() {
             ctx.loop_depth += 1;
+            ctx.loop_labels.push(LoopLabels {
+                start: label_start.clone(),
+                end: label_end.clone(),
+            });
         }
         self.gen_block_stmt(body);
         if let Some(ctx) = self.func_ctx.as_mut() {
             ctx.loop_depth -= 1;
+            ctx.loop_labels.pop();
         }
         // i = i + 1
         let t2 = self.ir.new_temp();
@@ -574,7 +593,13 @@ impl Analyzer {
         } else {
             PLACEHOLDER.to_string()
         };
-        self.ir.emit("BREAK", arg, PLACEHOLDER, PLACEHOLDER);
+        let end_label = self
+            .func_ctx
+            .as_ref()
+            .and_then(|c| c.loop_labels.last())
+            .map(|l| l.end.clone())
+            .unwrap_or_else(|| PLACEHOLDER.to_string());
+        self.ir.emit("BREAK", arg, PLACEHOLDER, end_label);
     }
 
     fn gen_continue(&mut self) {
@@ -586,8 +611,14 @@ impl Analyzer {
         if !in_loop {
             self.error("`continue` 必须位于循环体内（规则 5.4）".to_string());
         }
+        let start_label = self
+            .func_ctx
+            .as_ref()
+            .and_then(|c| c.loop_labels.last())
+            .map(|l| l.start.clone())
+            .unwrap_or_else(|| PLACEHOLDER.to_string());
         self.ir
-            .emit("CONTINUE", PLACEHOLDER, PLACEHOLDER, PLACEHOLDER);
+            .emit("CONTINUE", PLACEHOLDER, PLACEHOLDER, start_label);
     }
 
     /// 把一个语句块作为子语句处理（push 新作用域）。
@@ -1035,10 +1066,15 @@ impl Analyzer {
                 result_place: result_place.clone(),
                 break_type: None,
             });
+            ctx.loop_labels.push(LoopLabels {
+                start: label_start.clone(),
+                end: label_end.clone(),
+            });
         }
         self.gen_block_stmt(body);
         let break_type = if let Some(ctx) = self.func_ctx.as_mut() {
             ctx.loop_depth -= 1;
+            ctx.loop_labels.pop();
             ctx.loop_exprs.pop().and_then(|loop_ctx| loop_ctx.break_type)
         } else {
             None
