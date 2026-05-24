@@ -49,29 +49,29 @@
 
 ---
 
-## 🟡 轻度（IR 不优雅 / 错误恢复瑕疵）
+## 🟡 轻度（IR 不优雅 / 错误恢复瑕疵） ✅ 已修复
 
-### BUG #7 重复函数定义后仍生成两份 FUNC IR
+### BUG #7 重复函数定义后仍生成两份 FUNC IR  ✅
 - **文件**：`Easy_Analyzer/src/semantic.rs:144-154`（无去重跳过）
 - **现象**：`fn f(){} fn f(){}` 报"重复定义"正确，但 IR 含两份 `FUNC f`…`END_FUNC f`
 
-### BUG #8 带返回类型的函数若无任何 return，IR 缺终结子
+### BUG #8 带返回类型的函数若无任何 return，IR 缺终结子  ✅
 - **文件**：`Easy_Analyzer/src/semantic.rs:222-237`（仅 Unit 返回类型才 emit 隐式 RETURN）
 - **现象**：`fn f()->i32{ }` 的 IR 没有 RETURN，下游可能误判 fall-through
 
-### BUG #9 `if` 表达式两分支均为 Unit 时仍分配未写入的 temp
+### BUG #9 `if` 表达式两分支均为 Unit 时仍分配未写入的 temp  ✅
 - **文件**：`Easy_Analyzer/src/semantic.rs:991-1024` (`gen_if_expr`)
 - **现象**：无条件 `new_temp()`，但 Unit 分支不 emit `=` → temp 悬空
 
-### BUG #10 `loop { ... }` 的 end label 不可达
+### BUG #10 `loop { ... }` 的 end label 不可达  ✅（由 BUG #1 修复带动：BREAK 现在携带 end label，end 通过 BREAK 可达）
 - **文件**：`Easy_Analyzer/src/semantic.rs:1027-1049` (`gen_loop_expr`)
 - **现象**：只发 `LABEL start … GOTO start; LABEL end`，end 仅靠 break 才到（叠加 BUG #1 → 死循环）
 
-### BUG #11 块表达式作用域内"类型无法推断"漏报
+### BUG #11 块表达式作用域内"类型无法推断"漏报  ✅
 - **文件**：`Easy_Analyzer/src/semantic.rs:959-971` (`gen_block_expr` 未调 `check_current_scope_uninferred`)
 - **现象**：`let x = { let y; 1 };` 不报 y 无法推断
 
-### BUG #12 类型不一致的 `break <expr>` 仍发射 `=` 赋值 IR
+### BUG #12 类型不一致的 `break <expr>` 仍发射 `=` 赋值 IR  ✅
 - **文件**：`Easy_Analyzer/src/semantic.rs:563-572`
 - **现象**：报错后照常 emit `(=, "()", _, tN)`
 

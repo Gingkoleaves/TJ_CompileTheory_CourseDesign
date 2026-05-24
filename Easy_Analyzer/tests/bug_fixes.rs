@@ -72,3 +72,110 @@ fn bug6_truly_undeclared_still_reports_undeclared() {
         r.semantic_errors
     );
 }
+
+#[test]
+fn bug7_duplicate_function_emits_single_ir() {
+    // 重复函数定义应报错且 IR 中只保留首次函数体（一份 FUNC/END_FUNC）
+    let r = run("fn f(){} fn f(){} fn main(){}");
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("重复定义")),
+        "应报'重复定义'：{:?}",
+        r.semantic_errors
+    );
+    let func_f_count = r
+        .quadruples
+        .iter()
+        .filter(|q| q.op == "FUNC" && q.arg1 == "f")
+        .count();
+    assert_eq!(
+        func_f_count, 1,
+        "重复函数 f 在 IR 中应只出现一次，实际 {} 次",
+        func_f_count
+    );
+}
+
+#[test]
+fn bug8_non_unit_function_without_return_still_has_terminator() {
+    // `fn f()->i32 { }` 之前不发任何 RETURN；修复后函数末尾必有 RETURN 终结子
+    let r = run("fn f()->i32 { } fn main(){}");
+    let start = r
+        .quadruples
+        .iter()
+        .position(|q| q.op == "FUNC" && q.arg1 == "f")
+        .expect("FUNC f missing");
+    let end = r.quadruples[start..]
+        .iter()
+        .position(|q| q.op == "END_FUNC" && q.arg1 == "f")
+        .map(|i| i + start)
+        .expect("END_FUNC f missing");
+    let has_return = r.quadruples[start..end].iter().any(|q| q.op == "RETURN");
+    assert!(
+        has_return,
+        "fn f()->i32{{}} 的 IR 缺少 RETURN 终结子：{:?}",
+        &r.quadruples[start..=end]
+    );
+}
+
+#[test]
+fn bug9_unit_if_expr_does_not_emit_assign_to_temp() {
+    // `if 1>0 {} else {}` 两分支都是 Unit，不应分配/赋值 if 结果 temp
+    let r = run("fn main() { if 1>0 { } else { } }");
+    let assigns_to_temp = r
+        .quadruples
+        .iter()
+        .filter(|q| q.op == "=" && q.result.starts_with('t'))
+        .count();
+    assert_eq!(
+        assigns_to_temp, 0,
+        "Unit/Unit if 不应产生针对 temp 的赋值 IR：{:?}",
+        r.quadruples
+    );
+}
+
+#[test]
+fn bug11_block_expr_reports_uninferred_inner_var() {
+    // 块表达式内部的无法推断变量也应被报出
+    let r = run("fn main() { let x = { let y; 1 }; }");
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("y") && e.message.contains("无法推断")),
+        "块表达式内未推断变量应被报出：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug12_break_type_mismatch_skips_result_assign() {
+    // 同一 loop 中第二个 break 类型与第一个不一致：报类型不一致，且不发射 = 污染结果 temp
+    let r = run(
+        r#"
+        fn main() {
+            let mut x:i32 = loop {
+                break 1;
+                break 1==1;
+            };
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("类型不一致")),
+        "应报多个 break 类型不一致：{:?}",
+        r.semantic_errors
+    );
+    // 第一个 break 发 =；第二个 break 应跳过 =，loop 内只发 1 次 (=, 1, _, t_result)
+    let result_assigns = r
+        .quadruples
+        .iter()
+        .filter(|q| q.op == "=" && q.arg1 == "1" && q.result.starts_with('t'))
+        .count();
+    assert_eq!(
+        result_assigns, 1,
+        "类型不一致的 break 不应再发 =，实际 result 赋值次数 {}：{:?}",
+        result_assigns, r.quadruples
+    );
+}

@@ -149,14 +149,21 @@ impl Analyzer {
 
     pub fn analyze_program(&mut self, program: &Program) {
         // 先收集所有函数签名（支持前向调用）。
-        for f in &program.functions {
+        // 重复定义保留首次签名；后续同名函数标记跳过，避免 IR 中出现两份同名 FUNC/END_FUNC。
+        let mut skip = vec![false; program.functions.len()];
+        for (i, f) in program.functions.iter().enumerate() {
             let sig = self.build_function_sig(f);
             if self.table.lookup_function(&sig.name).is_some() {
                 self.error(format!("函数 `{}` 重复定义", sig.name));
+                skip[i] = true;
+            } else {
+                self.table.declare_function(sig);
             }
-            self.table.declare_function(sig);
         }
-        for f in &program.functions {
+        for (i, f) in program.functions.iter().enumerate() {
+            if skip[i] {
+                continue;
+            }
             self.analyze_function(f);
         }
     }
@@ -239,8 +246,11 @@ impl Analyzer {
                 ));
             }
             self.ir.emit("RETURN", v.place, PLACEHOLDER, PLACEHOLDER);
-        } else if matches!(return_type, Type::Unit) {
-            // 隐式 return;
+        } else {
+            // 无尾表达式时始终发射 RETURN 作为函数终结子，便于下游解释/翻译。
+            // 非 Unit 返回类型的源码若所有路径都已通过显式 return 退出，
+            // 该终结子不可达；若存在 fall-through 路径，则该终结子被执行（值未定义）。
+            // 这里不做控制流分析，不额外报错。
             self.ir
                 .emit("RETURN", PLACEHOLDER, PLACEHOLDER, PLACEHOLDER);
         }
@@ -579,6 +589,7 @@ impl Analyzer {
                 }
                 result_place = Some(ctx.result_place.clone());
             }
+            let has_type_error = type_error.is_some();
             if let Some((expected, actual)) = type_error {
                 self.error(format!(
                     "loop 表达式多个 break 类型不一致：{} vs {}（规则 7.4）",
@@ -586,8 +597,11 @@ impl Analyzer {
                     actual.display()
                 ));
             }
-            if let Some(result_place) = result_place {
-                self.ir.emit("=", v.place.clone(), PLACEHOLDER, result_place);
+            // 类型不一致时不再发射 = 赋值 IR，避免错误结果污染 loop 结果临时变量。
+            if !has_type_error {
+                if let Some(result_place) = result_place {
+                    self.ir.emit("=", v.place.clone(), PLACEHOLDER, result_place);
+                }
             }
             v.place
         } else {
@@ -1004,6 +1018,7 @@ impl Analyzer {
         } else {
             ExprValue::new(Type::Unit, PLACEHOLDER.to_string())
         };
+        self.check_current_scope_uninferred();
         self.pop_scope();
         result
     }
@@ -1025,12 +1040,13 @@ impl Analyzer {
 
         // then 分支
         let then_val = self.gen_block_expr(then_branch);
-        // 若是 if 表达式，结果用临时变量统一
-        let result_temp = self.ir.new_temp();
+        // 只有分支真正产生值时才分配临时变量，避免 Unit/Unit 时的悬空 temp。
+        let mut result_temp: Option<String> = None;
         let mut result_ty = then_val.ty.clone();
         if !matches!(then_val.ty, Type::Unit) {
-            self.ir
-                .emit("=", then_val.place, PLACEHOLDER, &result_temp);
+            let t = self.ir.new_temp();
+            self.ir.emit("=", then_val.place, PLACEHOLDER, &t);
+            result_temp = Some(t);
         }
         if has_else {
             self.ir.emit_goto(&label_end);
@@ -1054,12 +1070,16 @@ impl Analyzer {
                 result_ty = else_val.ty.clone();
             }
             if !matches!(else_val.ty, Type::Unit) {
-                self.ir
-                    .emit("=", else_val.place, PLACEHOLDER, &result_temp);
+                let t = result_temp
+                    .clone()
+                    .unwrap_or_else(|| self.ir.new_temp());
+                self.ir.emit("=", else_val.place, PLACEHOLDER, &t);
+                result_temp = Some(t);
             }
         }
         self.ir.emit_label(&label_end);
-        ExprValue::new(result_ty, result_temp)
+        let place = result_temp.unwrap_or_else(|| PLACEHOLDER.to_string());
+        ExprValue::new(result_ty, place)
     }
 
     fn gen_loop_expr(&mut self, body: &Block) -> ExprValue {
@@ -1086,6 +1106,8 @@ impl Analyzer {
         } else {
             None
         };
+        // label_end 仅作为 break 的跳转目标存在（loop 语义本身无 fall-through 退出）。
+        // 配合 gen_break 把 end 写入 BREAK 四元式第四元，end 通过 BREAK 可达。
         self.ir.emit_goto(&label_start);
         self.ir.emit_label(&label_end);
         ExprValue::new(break_type.unwrap_or(Type::Unit), result_place)
