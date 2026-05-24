@@ -197,6 +197,16 @@ impl Analyzer {
             }
         }
 
+        // 形参重名检查：保留首次出现的形参，重名仅报错并跳过其 PARAM_DECL / declare。
+        let mut seen_param_names = std::collections::HashSet::new();
+        let mut param_skip = vec![false; f.params.len()];
+        for (i, p) in f.params.iter().enumerate() {
+            if !seen_param_names.insert(p.name.clone()) {
+                self.error(format!("函数 `{}` 形参 `{}` 重名", f.name, p.name));
+                param_skip[i] = true;
+            }
+        }
+
         let sig = self
             .table
             .lookup_function(&f.name)
@@ -206,14 +216,20 @@ impl Analyzer {
 
         // 生成函数头
         self.ir.emit("FUNC", &f.name, PLACEHOLDER, PLACEHOLDER);
-        for (pname, pty, _pmut) in &sig.params {
+        for (i, (pname, pty, _pmut)) in sig.params.iter().enumerate() {
+            if param_skip[i] {
+                continue;
+            }
             self.ir
                 .emit("PARAM_DECL", pname.clone(), pty.display(), PLACEHOLDER);
         }
 
         // 进入函数作用域，登记形参
         self.push_scope();
-        for (pname, pty, pmut) in &sig.params {
+        for (i, (pname, pty, pmut)) in sig.params.iter().enumerate() {
+            if param_skip[i] {
+                continue;
+            }
             self.table.declare(VarSymbol::new(
                 pname.clone(),
                 pty.clone(),
@@ -894,18 +910,32 @@ impl Analyzer {
             }
             _ => (Type::Error, None),
         };
-        // 静态越界检查（仅对字面量整型下标）
-        if let (Some(len), Expr::Number { value }) = (len, index) {
-            if let Ok(n) = value.parse::<isize>() {
-                if n < 0 || (n as usize) >= len {
-                    let name = root_identifier(base)
-                        .map(|s| format!("数组 `{}` ", s))
-                        .unwrap_or_default();
-                    self.error(format!(
-                        "{}下标 {} 越界，合法范围 [0,{})（规则 8.3）",
-                        name, n, len
-                    ));
+        // 静态越界检查：支持正字面量、负字面量（Unary{Neg, Number}）、
+        // 以及超出 u128 的极大正字面量（解析失败一律视为越界）。
+        if let Some(len) = len {
+            let oob: Option<(bool, String)> = match index {
+                Expr::Number { value } => match value.parse::<u128>() {
+                    Ok(n) => Some((n >= len as u128, value.clone())),
+                    Err(_) => Some((true, value.clone())),
+                },
+                Expr::Unary { op: UnaryOp::Neg, expr } => {
+                    if let Expr::Number { value } = expr.as_ref() {
+                        // 负数对任意非空数组都越界；空数组 (len=0) 也越界。
+                        Some((true, format!("-{}", value)))
+                    } else {
+                        None
+                    }
                 }
+                _ => None,
+            };
+            if let Some((true, shown)) = oob {
+                let name = root_identifier(base)
+                    .map(|s| format!("数组 `{}` ", s))
+                    .unwrap_or_default();
+                self.error(format!(
+                    "{}下标 {} 越界，合法范围 [0,{})（规则 8.3）",
+                    name, shown, len
+                ));
             }
         }
         let t = self.ir.new_temp();

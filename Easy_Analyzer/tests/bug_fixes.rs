@@ -212,3 +212,55 @@ fn bug14_undeclared_function_carries_rule_number() {
         r.semantic_errors
     );
 }
+
+// ============================================================
+// 第二轮 BUG 修复回归（R-1 ~ R-3，🟠 中等）
+// ============================================================
+
+#[test]
+fn bug_r1_negative_literal_index_reports_oob() {
+    // a[-1] 应被报为静态越界（规则 8.3）
+    let r = run("fn main(){ let a:[i32;3]=[1,2,3]; let b:i32=a[-1]; }");
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("越界") && e.message.contains("-1")),
+        "a[-1] 应报负字面量越界：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_r2_oversized_literal_index_reports_oob() {
+    // 大于 u128 的数字字面量下标，解析失败也应视为越界
+    let r = run("fn main(){ let a:[i32;3]=[1,2,3]; let b:i32=a[99999999999999999999]; }");
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("越界")),
+        "极大字面量下标应报越界：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_r3_duplicate_param_name_reported_and_single_decl() {
+    let r = run("fn f(a:i32, a:i32){} fn main(){}");
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("形参") && e.message.contains("重名")),
+        "fn f(a, a) 应报形参重名：{:?}",
+        r.semantic_errors
+    );
+    let decls = r
+        .quadruples
+        .iter()
+        .filter(|q| q.op == "PARAM_DECL" && q.arg1 == "a")
+        .count();
+    assert_eq!(
+        decls, 1,
+        "fn f(a, a) 的 IR 中 PARAM_DECL a 应只出现 1 次，实际 {}",
+        decls
+    );
+}
