@@ -42,6 +42,7 @@ struct TokenView {
     value: String,
     #[serde(rename = "type")]
     type_: String,
+    #[serde(rename = "typeEnum")]
     type_enum: String,
 }
 

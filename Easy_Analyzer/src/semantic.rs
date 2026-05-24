@@ -684,6 +684,11 @@ impl Analyzer {
             .map(|s| (s.ty.clone(), s.initialized));
         match info {
             None => {
+                // 变量查不到时回退到函数表：若是函数名被当作表达式使用，
+                // 让后续的 gen_call 等以"类型不匹配"形式报错（PDF 例 program_3_3__4）。
+                if self.table.lookup_function(name).is_some() {
+                    return ExprValue::new(Type::Function, name.to_string());
+                }
                 self.error(format!("变量 `{}` 未声明（规则 2.2）", name));
                 ExprValue::error()
             }
@@ -950,8 +955,10 @@ impl Analyzer {
             }
             places.push(v.place);
         }
+        // 空数组字面量 `[]` 没有元素可推断类型，用 Error 作元素类型，
+        // 经 `compatible` 通配传播，避免对 `let a:[i32;0]=[];` 误报。
         let inferred = Type::Array {
-            element: Box::new(elem_ty.unwrap_or(Type::Unknown)),
+            element: Box::new(elem_ty.unwrap_or(Type::Error)),
             length: elements.len(),
         };
         let t = self.ir.new_temp();

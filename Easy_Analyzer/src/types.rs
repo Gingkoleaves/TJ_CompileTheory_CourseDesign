@@ -25,6 +25,8 @@ pub enum Type {
     Tuple { elements: Vec<Type> },
     /// 整型字面量字面值范围（`a..b`），用于 for 循环。
     Range,
+    /// 函数类型占位：标识符指向函数（仅出现在函数名被当作表达式使用时）。
+    Function,
     /// 类型未知（声明未给类型且未初始化前）。
     Unknown,
     /// 永不返回（return 表达式等）。
@@ -98,6 +100,7 @@ impl Type {
                 }
             }
             Type::Range => "Range<i32>".to_string(),
+            Type::Function => "<函数>".to_string(),
             Type::Unknown => "<未知>".to_string(),
             Type::Never => "!".to_string(),
             Type::Error => "<类型错误>".to_string(),

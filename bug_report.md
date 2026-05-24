@@ -27,21 +27,21 @@
 
 ---
 
-## 🟠 中等（误报合法代码 / 影响扩展规则）
+## 🟠 中等（误报合法代码 / 影响扩展规则） ✅ 已修复
 
-### BUG #4 零长度数组字面量 `let a:[i32;0]=[]` 误报类型不匹配
+### BUG #4 零长度数组字面量 `let a:[i32;0]=[]` 误报类型不匹配  ✅
 - **文件**：`Easy_Analyzer/src/semantic.rs:922-925` + `Easy_Analyzer/src/types.rs:63-72`
 - **现象**：`gen_array` 对空 elements 推断为 `Array{Unknown, 0}`；`compatible` 在数组分支递归到 `I32.compatible(Unknown)` 回落到 `==` → false；`is_known()` 仅检查顶层，所以 mismatch 路径触发误报
 - **复现**：`fn main(){ let a:[i32;0]=[]; }` → 报 "[i32; 0] 与 [<未知>; 0] 不匹配"
 - **修法**：空数组返回 `Array{Error, 0}`（Error 在 compatible 中通配），或 `compatible` 数组分支对 Unknown 元素短路通过
 
-### BUG #5 Server `TokenView.type_enum` 字段没加 serde rename，前端"枚举"列恒为空
+### BUG #5 Server `TokenView.type_enum` 字段没加 serde rename，前端"枚举"列恒为空  ✅
 - **文件**：`Easy_Server/src/main.rs:45, 64` + `index.html:375`
 - **现象**：后端序列化为 `"type_enum"`，前端读 `t.typeEnum` 得 `undefined` → `esc(undefined)` 输出空字符串
 - **复现**：任意源码点"分析" → Token 表"枚举"列空白
 - **修法**：给 `type_enum: String` 加 `#[serde(rename = "typeEnum")]`，或前端改读 `t.type_enum`
 
-### BUG #6 函数名作实参时错误信息文不对题（PDF 例 program_3_3__4）
+### BUG #6 函数名作实参时错误信息文不对题（PDF 例 program_3_3__4）  ✅
 - **文件**：`Easy_Analyzer/src/semantic.rs::gen_identifier` (~L649) + `gen_call`
 - **现象**：PDF 期望"实参类型与形参类型不一致"；实际报"变量 program_3_3_4_a 未声明"（因 `gen_identifier` 在变量符号表查不到函数名）
 - **影响**：语义上仍报错 → 测试 `assert_err` 通过，但与 PDF 描述不符，扣分点
