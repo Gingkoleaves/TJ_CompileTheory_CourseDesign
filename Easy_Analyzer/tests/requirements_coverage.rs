@@ -109,7 +109,10 @@ fn deeper_composite_and_loop_errors() {
 
 #[test]
 fn extended_array_errors() {
-    assert_error_contains("fn main(){ let a:[i32;2]=[1,2,3]; }", &["[i32; 2]", "[i32; 3]", "不匹配"]);
+    assert_error_contains(
+        "fn main(){ let a:[i32;2]=[1,2,3]; }",
+        &["数组长度不匹配", "2", "3"],
+    );
     assert_error_contains("fn main(){ let a:[[i32;1];1]=[1]; }", &["[[i32; 1]; 1]", "[i32; 1]", "不匹配"]);
     assert_error_contains("fn main(){ let a=[1,2,3]; let b=a[a]; }", &["下标", "i32"]);
     assert_error_contains("fn main(){ let a=[1,2,3]; let b=a[3]; }", &["越界"]);

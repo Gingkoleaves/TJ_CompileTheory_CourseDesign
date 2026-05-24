@@ -73,9 +73,9 @@
 
 ---
 
-## 🟡 轻度（信息丢失 / 设计不严谨）
+## 🟡 轻度（信息丢失 / 设计不严谨） ✅ 已修复
 
-### BUG R-4 `for` 循环变量的显式类型注解被静默丢弃
+### BUG R-4 `for` 循环变量的显式类型注解被静默丢弃  ✅
 - **文件**：`Easy_Analyzer/src/semantic.rs:530-537`
 - **现象**：解析器允许 `for mut i:T in iter {}`（`parse_binding(false)` 接收可选 `:T`），但 `gen_for` 不读 `binding.ty`，直接用 `start_ty`（range → 强制 I32）登记符号。用户给出的不匹配类型注解（如 `for i:[i32;3] in 0..3`）既不被采用也不被报错。
 - **复现**（triage::cand_q_for_binding_explicit_type_silently_ignored 中通过下游 `let _x:[i32;3]=i` 触发"i32 与 [i32;3] 不匹配"，间接观察到 i 被当作 i32）：
@@ -97,9 +97,9 @@
 
 ---
 
-## 🔵 措辞 / 信息瑕疵
+## 🔵 措辞 / 信息瑕疵 ✅ 已修复
 
-### BUG R-5 错误信息中暴露内部占位 `<类型错误>` / `<函数>`
+### BUG R-5 错误信息中暴露内部占位 `<类型错误>` / `<函数>`  ✅
 - **文件**：`Easy_Analyzer/src/types.rs:103, 106`（`Type::display`）
 - **现象**：用户能在错误消息里看到 `<类型错误>` / `<函数>` 这类只面向开发者的占位字符串。
   - `let a:[i32;2]=[];` → "声明类型 [i32; 2] 与初始化表达式类型 **[<类型错误>; 0]** 不匹配"
@@ -109,7 +109,7 @@
   - 空数组场景：在 `gen_let` 数组分支特判 `Type::Array { length: 0, .. } vs Type::Array { length: n>0, .. }` 直接给"数组长度不匹配（0 vs n）"。
   - 函数名作 RValue：`Type::Function` 转义为"函数引用（不可作 RValue）"或在 `gen_let/gen_assign` 上游识别 `expr_ty == Function` 后给专门报错。
 
-### BUG R-6 调用变量名报"调用未声明的函数 `a`"措辞失真
+### BUG R-6 调用变量名报"调用未声明的函数 `a`"措辞失真  ✅
 - **文件**：`Easy_Analyzer/src/semantic.rs:815-817`（`gen_call`）
 - **现象**：`a` 是已声明的变量，被当函数调用时报"调用未声明的函数 `a`（规则 3.5）"，给读者错觉 `a` 不存在。
 - **复现**（triage::cand_i_call_a_variable，已通过但暴露措辞问题）：

@@ -310,12 +310,27 @@ impl Analyzer {
                         && decl.is_known()
                         && expr_ty.is_known()
                     {
-                        self.error(format!(
-                            "变量 `{}` 声明类型 {} 与初始化表达式类型 {} 不匹配",
-                            binding.name,
-                            decl.display(),
-                            expr_ty.display()
-                        ));
+                        // 专门化报错，避免错误信息出现 <类型错误> / <函数> 等内部占位。
+                        let msg = match (decl, expr_ty) {
+                            (
+                                Type::Array { length: l1, .. },
+                                Type::Array { length: l2, .. },
+                            ) if l1 != l2 => format!(
+                                "变量 `{}` 数组长度不匹配：声明长度 {}，初始化长度 {}（规则 8.2）",
+                                binding.name, l1, l2
+                            ),
+                            (_, Type::Function) => format!(
+                                "变量 `{}` 用函数 `{}` 作为初始化表达式：函数不能直接用作值（应加 `()` 调用）",
+                                binding.name, v.place
+                            ),
+                            _ => format!(
+                                "变量 `{}` 声明类型 {} 与初始化表达式类型 {} 不匹配",
+                                binding.name,
+                                decl.display(),
+                                expr_ty.display()
+                            ),
+                        };
+                        self.error(msg);
                     }
                     decl.clone()
                 }
@@ -542,6 +557,23 @@ impl Analyzer {
                 (Type::Error, PLACEHOLDER.to_string(), PLACEHOLDER.to_string())
             }
         };
+
+        // 用户在循环变量上写了显式类型注解时，与迭代起点类型一致性校验
+        // （之前实现完全忽略 binding.ty，导致 `for i:[i32;3] in 0..3` 被静默吞掉）
+        if let Some(node) = &binding.ty {
+            let declared = from_node(node);
+            if declared.is_known()
+                && start_ty.is_known()
+                && !declared.compatible(&start_ty)
+            {
+                self.error(format!(
+                    "for 循环变量 `{}` 注解类型 {} 与迭代结构元素类型 {} 不一致（规则 5.2）",
+                    binding.name,
+                    declared.display(),
+                    start_ty.display()
+                ));
+            }
+        }
 
         self.push_scope();
         // 循环变量
@@ -830,7 +862,15 @@ impl Analyzer {
 
         let sig = self.table.lookup_function(&name).cloned();
         let Some(sig) = sig else {
-            self.error(format!("调用未声明的函数 `{}`（规则 3.5）", name));
+            // 区分两种情况：标识符是一个已声明的变量 vs 真的未声明
+            if self.table.lookup(&name).is_some() {
+                self.error(format!(
+                    "变量 `{}` 不是函数，不能被调用（规则 3.5）",
+                    name
+                ));
+            } else {
+                self.error(format!("调用未声明的函数 `{}`（规则 3.5）", name));
+            }
             for a in args {
                 self.gen_expr(a);
             }

@@ -214,7 +214,7 @@ fn bug14_undeclared_function_carries_rule_number() {
 }
 
 // ============================================================
-// 第二轮 BUG 修复回归（R-1 ~ R-3，🟠 中等）
+// 第二轮 BUG 修复回归（R-1 ~ R-6）
 // ============================================================
 
 #[test]
@@ -246,6 +246,7 @@ fn bug_r2_oversized_literal_index_reports_oob() {
 #[test]
 fn bug_r3_duplicate_param_name_reported_and_single_decl() {
     let r = run("fn f(a:i32, a:i32){} fn main(){}");
+    // 1) 应报"重名"错误
     assert!(
         r.semantic_errors
             .iter()
@@ -253,6 +254,7 @@ fn bug_r3_duplicate_param_name_reported_and_single_decl() {
         "fn f(a, a) 应报形参重名：{:?}",
         r.semantic_errors
     );
+    // 2) IR 中 PARAM_DECL a 只应出现一次
     let decls = r
         .quadruples
         .iter()
@@ -262,5 +264,85 @@ fn bug_r3_duplicate_param_name_reported_and_single_decl() {
         decls, 1,
         "fn f(a, a) 的 IR 中 PARAM_DECL a 应只出现 1 次，实际 {}",
         decls
+    );
+}
+
+#[test]
+fn bug_r4_for_binding_annotation_mismatch_reported() {
+    // for 循环变量上写了与 range 不兼容的类型注解，应报"不一致"
+    let r = run("fn main(){ for i:[i32;3] in 0..3 { } }");
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("for 循环变量") && e.message.contains("不一致")),
+        "for 循环变量类型注解与迭代元素类型不一致应被报出：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_r4_for_binding_annotation_matching_silent() {
+    // 写了 i32（与 range 一致）应无 R-4 类型错
+    let r = run("fn main(){ for i:i32 in 0..3 { } }");
+    assert!(
+        !r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("for 循环变量")),
+        "for i:i32 in 0..3 应无 for-binding 错误：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_r5_empty_array_length_mismatch_msg_is_clean() {
+    // 错误信息不应出现内部占位 <类型错误>
+    let r = run("fn main(){ let a:[i32;2]=[]; }");
+    let msgs: Vec<String> = r.semantic_errors.iter().map(|e| e.message.clone()).collect();
+    assert!(!msgs.is_empty(), "[i32;2] = [] 应报错");
+    assert!(
+        msgs.iter().all(|m| !m.contains("<类型错误>")),
+        "错误信息不应暴露 <类型错误>：{:?}",
+        msgs
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("数组长度不匹配")),
+        "应报数组长度不匹配：{:?}",
+        msgs
+    );
+}
+
+#[test]
+fn bug_r5_function_as_rvalue_msg_is_clean() {
+    // 函数名作 RValue 时，错误信息不应出现 <函数>
+    let r = run("fn g(){} fn main(){ let a:i32 = g; }");
+    let msgs: Vec<String> = r.semantic_errors.iter().map(|e| e.message.clone()).collect();
+    assert!(!msgs.is_empty(), "let a:i32 = g 应报错");
+    assert!(
+        msgs.iter().all(|m| !m.contains("<函数>")),
+        "错误信息不应暴露 <函数> 占位：{:?}",
+        msgs
+    );
+    assert!(
+        msgs.iter()
+            .any(|m| m.contains("函数 `g`") && m.contains("不能直接用作值")),
+        "应给出针对函数名作值的专门提示：{:?}",
+        msgs
+    );
+}
+
+#[test]
+fn bug_r6_call_variable_says_not_a_function() {
+    // 把变量当函数调用，应说"不是函数"，而不是"未声明"
+    let r = run("fn main(){ let a:i32 = 1; a(); }");
+    let msgs: Vec<String> = r.semantic_errors.iter().map(|e| e.message.clone()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("`a`") && m.contains("不是函数")),
+        "调用变量应报'不是函数'：{:?}",
+        msgs
+    );
+    assert!(
+        !msgs.iter().any(|m| m.contains("未声明的函数 `a`")),
+        "已声明的变量 a 不应再被报为'未声明的函数'：{:?}",
+        msgs
     );
 }
