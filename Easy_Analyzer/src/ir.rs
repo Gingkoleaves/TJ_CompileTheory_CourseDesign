@@ -2,6 +2,10 @@
 //!
 //! 约定操作码：
 //! - `=`：赋值 `(=, src, _, dst)`
+//! - `[]=`：数组下标写回 `([]=, value, index, array)`
+//! - `.=`：元组字段写回 `(.=, value, field, tuple)`
+//! - `INDEX`：数组下标读 `(INDEX, array, index, t)`
+//! - `FIELD`：元组字段读 `(FIELD, tuple, field, t)`
 //! - `+ - * /`：算术 `(+, a, b, t)`
 //! - `< <= > >= == !=`：比较 `(cmp, a, b, t)`，结果为 0/1
 //! - `NEG`：取负 `(NEG, a, _, t)`

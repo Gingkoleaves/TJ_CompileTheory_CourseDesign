@@ -438,26 +438,115 @@ impl Analyzer {
                     _ => {}
                 }
             }
-            Expr::Index { .. } | Expr::Field { .. } => {
+            Expr::Index { base, index } => {
+                // BUG B-2：原实现走 `gen_expr(target)` 读出 a[i] 到 temp，
+                // 然后 `= value _ temp`，数组本体从不被写。
+                // 现在分别求 base 与 index 的 place，并用新操作码 `[]=` 直接写回数组。
                 if let Some(name) = root_identifier(target) {
                     if let Some(sym) = self.table.lookup(name) {
                         if !sym.mutable {
                             self.error(format!(
-                                "不可变变量 `{}` 的元素不能被赋值（规则 8.3/9.3）",
+                                "不可变变量 `{}` 的元素不能被赋值（规则 8.3）",
                                 name
                             ));
                         }
                     }
                 }
-                let tgt = self.gen_expr(target);
-                if tgt.ty.is_known() && value_val.ty.is_known() && !tgt.ty.compatible(&value_val.ty) {
+                let base_v = self.gen_expr(base);
+                let idx_v = self.gen_expr(index);
+                if idx_v.ty.is_known() && !idx_v.ty.is_integer() {
                     self.error(format!(
-                        "赋值目标类型 {} 与表达式类型 {} 不匹配",
-                        tgt.ty.display(),
+                        "数组下标类型 {} 不是整数（规则 8.3）",
+                        idx_v.ty.display()
+                    ));
+                }
+                let elem_ty = match &base_v.ty {
+                    Type::Array { element, length } => {
+                        self.check_array_static_oob(base, index, *length);
+                        (**element).clone()
+                    }
+                    Type::Error => Type::Error,
+                    other if other.is_known() => {
+                        self.error(format!(
+                            "类型 {} 不可索引（规则 8.3）",
+                            other.display()
+                        ));
+                        Type::Error
+                    }
+                    _ => Type::Error,
+                };
+                if elem_ty.is_known()
+                    && value_val.ty.is_known()
+                    && !elem_ty.compatible(&value_val.ty)
+                {
+                    self.error(format!(
+                        "赋值目标类型 {} 与表达式类型 {} 不匹配（规则 2.2）",
+                        elem_ty.display(),
                         value_val.ty.display()
                     ));
                 }
-                self.ir.emit("=", value_val.place, PLACEHOLDER, tgt.place);
+                self.ir
+                    .emit("[]=", value_val.place, idx_v.place, base_v.place);
+            }
+            Expr::Field { base, field } => {
+                // BUG B-3：与 B-2 同根。原实现把 a.n 读到 temp 后写入 temp，元组本体未被改。
+                // 现在直接用 `.=` 写回元组。
+                if let Some(name) = root_identifier(target) {
+                    if let Some(sym) = self.table.lookup(name) {
+                        if !sym.mutable {
+                            self.error(format!(
+                                "不可变变量 `{}` 的元素不能被赋值（规则 9.3）",
+                                name
+                            ));
+                        }
+                    }
+                }
+                let base_v = self.gen_expr(base);
+                let idx = match field.parse::<usize>() {
+                    Ok(i) => Some(i),
+                    Err(_) => {
+                        self.error(format!(
+                            "元组字段 `{}` 不是合法整数下标（规则 9.3）",
+                            field
+                        ));
+                        None
+                    }
+                };
+                let elem_ty = match (&base_v.ty, idx) {
+                    (Type::Tuple { elements }, Some(i)) => {
+                        if i >= elements.len() {
+                            self.error(format!(
+                                "元组下标 {} 越界，合法范围 [0,{})（规则 9.3）",
+                                i,
+                                elements.len()
+                            ));
+                            Type::Error
+                        } else {
+                            elements[i].clone()
+                        }
+                    }
+                    (Type::Error, _) => Type::Error,
+                    (other, _) if other.is_known() => {
+                        self.error(format!(
+                            "类型 {} 不支持点字段访问（规则 9.3）",
+                            other.display()
+                        ));
+                        Type::Error
+                    }
+                    _ => Type::Error,
+                };
+                if elem_ty.is_known()
+                    && value_val.ty.is_known()
+                    && !elem_ty.compatible(&value_val.ty)
+                {
+                    self.error(format!(
+                        "赋值目标类型 {} 与表达式类型 {} 不匹配（规则 2.2）",
+                        elem_ty.display(),
+                        value_val.ty.display()
+                    ));
+                }
+                self.ir
+                    .emit(".=", value_val.place, field.to_string(), base_v.place);
             }
             _ => {
                 self.error("赋值语句左侧不是合法左值".to_string());
@@ -549,12 +638,42 @@ impl Analyzer {
                 (Type::I32, l.place, r.place)
             }
             other => {
+                // BUG B-5：错误恢复——只报错并保留循环变量声明 + 走一遍循环体语义检查，
+                // 不发射任何 for 骨架 IR，避免出现 `= _ _ i` / `< i _ t` 等含占位的语义错误代码。
                 let v = self.gen_expr(other);
                 self.error(format!(
                     "for 迭代结构必须是范围 `a..b`（实际类型 {}）",
                     v.ty.display()
                 ));
-                (Type::Error, PLACEHOLDER.to_string(), PLACEHOLDER.to_string())
+                self.push_scope();
+                let declared = binding
+                    .ty
+                    .as_ref()
+                    .map(from_node)
+                    .unwrap_or(Type::Error);
+                self.table.declare(VarSymbol::new(
+                    binding.name.clone(),
+                    declared,
+                    binding.mutable,
+                    true,
+                ));
+                // 进入"伪循环"上下文：loop_depth 自增确保 body 中的 break/continue
+                // 不被误报为"循环外"，但不入栈 loop_labels（也不发跳转 IR）。
+                if let Some(ctx) = self.func_ctx.as_mut() {
+                    ctx.loop_depth += 1;
+                }
+                for s in &body.statements {
+                    self.gen_stmt(s);
+                }
+                if let Some(tail) = &body.tail {
+                    self.gen_expr(tail);
+                }
+                if let Some(ctx) = self.func_ctx.as_mut() {
+                    ctx.loop_depth -= 1;
+                }
+                self.check_current_scope_uninferred();
+                self.pop_scope();
+                return;
             }
         };
 
@@ -583,7 +702,12 @@ impl Analyzer {
             binding.mutable,
             true,
         ));
+        // BUG B-1：单一 label_start 同时充当"条件入口"与 continue 目标，
+        // 会让 continue 跳过自增 `i = i + 1`，导致 for 循环体 continue 死循环。
+        // 修复：拆出独立的 label_cont 位于自增之前，continue 跳到 label_cont，
+        // label_start 仍是条件检查入口。
         let label_start = self.ir.new_label();
+        let label_cont = self.ir.new_label();
         let label_end = self.ir.new_label();
         // i = start
         self.ir.emit("=", start_place, PLACEHOLDER, &binding.name);
@@ -595,7 +719,7 @@ impl Analyzer {
         if let Some(ctx) = self.func_ctx.as_mut() {
             ctx.loop_depth += 1;
             ctx.loop_labels.push(LoopLabels {
-                start: label_start.clone(),
+                start: label_cont.clone(),
                 end: label_end.clone(),
             });
         }
@@ -604,7 +728,8 @@ impl Analyzer {
             ctx.loop_depth -= 1;
             ctx.loop_labels.pop();
         }
-        // i = i + 1
+        // L_cont: i = i + 1; goto L_start
+        self.ir.emit_label(&label_cont);
         let t2 = self.ir.new_temp();
         self.ir
             .emit("+", binding.name.clone(), "1".to_string(), &t2);
@@ -700,6 +825,35 @@ impl Analyzer {
     fn check_current_scope_uninferred(&mut self) {
         for name in self.table.current_scope_uninferred_names() {
             self.error(format!("变量 `{}` 无法推断类型（规则 2.1）", name));
+        }
+    }
+
+    /// 数组下标静态越界检查（被 gen_index 与 indexed-assign 共用）。
+    /// 仅识别 `Expr::Number` 与 `Expr::Unary{Neg, Number}` 字面量形态；
+    /// 解析失败（过大）一律视为越界。
+    fn check_array_static_oob(&mut self, base: &Expr, index: &Expr, len: usize) {
+        let oob: Option<(bool, String)> = match index {
+            Expr::Number { value } => match value.parse::<u128>() {
+                Ok(n) => Some((n >= len as u128, value.clone())),
+                Err(_) => Some((true, value.clone())),
+            },
+            Expr::Unary { op: UnaryOp::Neg, expr } => {
+                if let Expr::Number { value } = expr.as_ref() {
+                    Some((true, format!("-{}", value)))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if let Some((true, shown)) = oob {
+            let name = root_identifier(base)
+                .map(|s| format!("数组 `{}` ", s))
+                .unwrap_or_default();
+            self.error(format!(
+                "{}下标 {} 越界，合法范围 [0,{})（规则 8.3）",
+                name, shown, len
+            ));
         }
     }
 
@@ -837,13 +991,29 @@ impl Analyzer {
         let (op_str, is_cmp) = bin_op_info(op);
         // 类型检查：算术与比较都要求 i32
         let both_known = l.ty.is_known() && r.ty.is_known();
-        if both_known && (!l.ty.is_integer() || !r.ty.is_integer()) {
-            self.error(format!(
-                "运算 `{}` 仅支持 i32，实际类型 {} 与 {}",
-                op_str,
-                l.ty.display(),
-                r.ty.display()
-            ));
+        if both_known {
+            // BUG B-4：原本会渲染成"实际类型 函数 与 i32"，对用户不直观。
+            // 针对函数名作运算数的常见误用专门给出"加 `()` 调用"的提示。
+            let l_is_fn = matches!(l.ty, Type::Function);
+            let r_is_fn = matches!(r.ty, Type::Function);
+            if l_is_fn || r_is_fn {
+                let names: Vec<String> = [l_is_fn.then(|| l.place.clone()), r_is_fn.then(|| r.place.clone())]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                self.error(format!(
+                    "运算 `{}` 操作数不能是函数名 `{}`（请加 `()` 调用）",
+                    op_str,
+                    names.join("`、`")
+                ));
+            } else if !l.ty.is_integer() || !r.ty.is_integer() {
+                self.error(format!(
+                    "运算 `{}` 仅支持 i32，实际类型 {} 与 {}",
+                    op_str,
+                    l.ty.display(),
+                    r.ty.display()
+                ));
+            }
         }
         let t = self.ir.new_temp();
         self.ir.emit(op_str, l.place, r.place, &t);
@@ -953,30 +1123,7 @@ impl Analyzer {
         // 静态越界检查：支持正字面量、负字面量（Unary{Neg, Number}）、
         // 以及超出 u128 的极大正字面量（解析失败一律视为越界）。
         if let Some(len) = len {
-            let oob: Option<(bool, String)> = match index {
-                Expr::Number { value } => match value.parse::<u128>() {
-                    Ok(n) => Some((n >= len as u128, value.clone())),
-                    Err(_) => Some((true, value.clone())),
-                },
-                Expr::Unary { op: UnaryOp::Neg, expr } => {
-                    if let Expr::Number { value } = expr.as_ref() {
-                        // 负数对任意非空数组都越界；空数组 (len=0) 也越界。
-                        Some((true, format!("-{}", value)))
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            };
-            if let Some((true, shown)) = oob {
-                let name = root_identifier(base)
-                    .map(|s| format!("数组 `{}` ", s))
-                    .unwrap_or_default();
-                self.error(format!(
-                    "{}下标 {} 越界，合法范围 [0,{})（规则 8.3）",
-                    name, shown, len
-                ));
-            }
+            self.check_array_static_oob(base, index, len);
         }
         let t = self.ir.new_temp();
         self.ir.emit("INDEX", b.place, i.place, &t);

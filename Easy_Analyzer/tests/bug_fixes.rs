@@ -330,6 +330,242 @@ fn bug_r5_function_as_rvalue_msg_is_clean() {
     );
 }
 
+// ============================================================
+// 第三轮 BUG 修复回归（B-1 ~ B-5）
+// ============================================================
+
+#[test]
+fn bug_b1_for_continue_does_not_skip_increment() {
+    // for + continue 的语义：continue 跳到 label_cont，从该 label 前进必须先经过
+    // 自增 `i = i + 1`，再到 GOTO 回 label_start（条件检查）。
+    // 原 bug：continue 跳到 label_start 本身，越过自增 → 死循环。
+    let r = run(
+        r#"
+        fn main() {
+            for i in 0..5 {
+                if i == 2 { continue; }
+            }
+        }
+        "#,
+    );
+    let q = &r.quadruples;
+    let cont_target = q
+        .iter()
+        .find(|x| x.op == "CONTINUE")
+        .map(|x| x.result.clone())
+        .expect("应有 CONTINUE 四元式");
+    let target_idx = q
+        .iter()
+        .position(|x| x.op == "LABEL" && x.arg1 == cont_target)
+        .expect("continue 目标 label 应存在");
+    let suffix = &q[target_idx..];
+    let inc_pos = suffix
+        .iter()
+        .position(|x| x.op == "+" && x.arg1 == "i" && x.arg2 == "1");
+    let if_false_pos = suffix.iter().position(|x| x.op == "IF_FALSE");
+    let inc_pos = inc_pos.expect("从 continue 目标向后必须能到达自增 i = i + 1");
+    if let Some(cmp) = if_false_pos {
+        assert!(
+            inc_pos < cmp,
+            "B-1 回归：从 continue 目标 (`{}`) 走，自增必须先于下一次条件检查；\
+             实际自增相对位置 {}，IF_FALSE 相对位置 {}",
+            cont_target,
+            inc_pos,
+            cmp
+        );
+    }
+}
+
+#[test]
+fn bug_b2_array_index_assign_writes_back_to_array() {
+    // a[0] = 5; 必须产出 `[]= 5 0 a` 类写回 IR，不能只写到 temp。
+    let r = run(
+        r#"
+        fn main() {
+            let mut a:[i32;3] = [1,2,3];
+            a[0] = 5;
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors.is_empty(),
+        "合法 a[0] = 5 不应报错：{:?}",
+        r.semantic_errors
+    );
+    let has_array_store = r
+        .quadruples
+        .iter()
+        .any(|q| q.op == "[]=" && q.arg1 == "5" && q.arg2 == "0" && q.result == "a");
+    assert!(
+        has_array_store,
+        "B-2 回归：a[0] = 5 应产出 `[]= 5 0 a`，实际 IR：{:?}",
+        r.quadruples
+    );
+}
+
+#[test]
+fn bug_b2_array_index_assign_preserves_oob_check() {
+    // 写入越界下标仍应报错（不能因为换 op 丢失检查）
+    let r = run(
+        r#"
+        fn main() {
+            let mut a:[i32;3] = [1,2,3];
+            a[5] = 4;
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("越界") && e.message.contains("数组 `a`")),
+        "B-2 回归：写入越界仍应报错并带数组名：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_b2_immutable_array_element_assignment_rejected() {
+    // 不可变数组写元素仍应报错（规则 8.3）
+    let r = run(
+        r#"
+        fn main() {
+            let a:[i32;3] = [1,2,3];
+            a[0] = 4;
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("不可变") && e.message.contains("`a`")),
+        "B-2 回归：不可变数组元素赋值应报错：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_b3_tuple_field_assign_writes_back_to_tuple() {
+    let r = run(
+        r#"
+        fn main() {
+            let mut a:(i32,i32) = (1,2);
+            a.0 = 5;
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors.is_empty(),
+        "合法 a.0 = 5 不应报错：{:?}",
+        r.semantic_errors
+    );
+    let has_tuple_store = r
+        .quadruples
+        .iter()
+        .any(|q| q.op == ".=" && q.arg1 == "5" && q.arg2 == "0" && q.result == "a");
+    assert!(
+        has_tuple_store,
+        "B-3 回归：a.0 = 5 应产出 `.= 5 0 a`，实际 IR：{:?}",
+        r.quadruples
+    );
+}
+
+#[test]
+fn bug_b3_tuple_oob_field_assign_rejected() {
+    let r = run(
+        r#"
+        fn main() {
+            let mut a:(i32,i32) = (1,2);
+            a.5 = 3;
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("元组下标") && e.message.contains("越界")),
+        "B-3 回归：元组字段越界写入应报错：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_b3_immutable_tuple_field_assignment_rejected() {
+    let r = run(
+        r#"
+        fn main() {
+            let a:(i32,i32) = (1,2);
+            a.0 = 5;
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("不可变") && e.message.contains("`a`")),
+        "B-3 回归：不可变元组字段赋值应报错：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_b4_function_operand_in_binary_op_has_friendly_message() {
+    // 错误信息既不应包含 <函数>，也应给出"加 `()` 调用"的提示
+    let r = run("fn g(){} fn main(){ let a:i32 = g + 1; }");
+    let msgs: Vec<String> = r
+        .semantic_errors
+        .iter()
+        .map(|e| e.message.clone())
+        .collect();
+    assert!(
+        msgs.iter().all(|m| !m.contains("<函数>")),
+        "B-4 回归：错误信息不应含 <函数> 占位：{:?}",
+        msgs
+    );
+    assert!(
+        msgs.iter().any(|m| m.contains("函数名 `g`") && m.contains("`()` 调用")),
+        "B-4 回归：应给出'函数名 `g`（请加 `()` 调用）'提示：{:?}",
+        msgs
+    );
+}
+
+#[test]
+fn bug_b5_for_non_range_iterable_emits_no_loop_scaffold() {
+    // 错误恢复路径下不应再发射含 `_` 操作数的 for 骨架 IR
+    let r = run(
+        r#"
+        fn main() {
+            for i in 0+5 { }
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("for 迭代结构必须是范围")),
+        "B-5 回归：非 range 应报错：{:?}",
+        r.semantic_errors
+    );
+    // 不应出现 `= _ _ i` 或 `< i _ tN` 的占位骨架
+    let has_placeholder_assign = r
+        .quadruples
+        .iter()
+        .any(|q| q.op == "=" && q.arg1 == "_" && q.result == "i");
+    assert!(
+        !has_placeholder_assign,
+        "B-5 回归：错误恢复仍发射 `= _ _ i` 骨架：{:?}",
+        r.quadruples
+    );
+    let has_placeholder_cmp = r
+        .quadruples
+        .iter()
+        .any(|q| q.op == "<" && q.arg1 == "i" && q.arg2 == "_");
+    assert!(
+        !has_placeholder_cmp,
+        "B-5 回归：错误恢复仍发射 `< i _ t` 比较：{:?}",
+        r.quadruples
+    );
+}
+
 #[test]
 fn bug_r6_call_variable_says_not_a_function() {
     // 把变量当函数调用，应说"不是函数"，而不是"未声明"

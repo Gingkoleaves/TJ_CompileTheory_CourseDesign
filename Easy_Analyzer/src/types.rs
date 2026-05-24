@@ -100,10 +100,11 @@ impl Type {
                 }
             }
             Type::Range => "Range<i32>".to_string(),
-            Type::Function => "<函数>".to_string(),
-            Type::Unknown => "<未知>".to_string(),
+            // 这些占位均面向最终用户的错误信息，避免内部尖括号格式渗出。
+            Type::Function => "函数".to_string(),
+            Type::Unknown => "未知类型".to_string(),
             Type::Never => "!".to_string(),
-            Type::Error => "<类型错误>".to_string(),
+            Type::Error => "类型错误".to_string(),
         }
     }
 }
