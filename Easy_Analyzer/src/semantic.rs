@@ -450,7 +450,19 @@ impl Analyzer {
                 // 通过引用赋值（规则 6.4）
                 let inner = self.gen_expr(expr);
                 match &inner.ty {
-                    Type::Ref { mutable: true, inner: _ } => {
+                    Type::Ref { mutable: true, inner: pointee } => {
+                        // 修复 BUG 3：之前只校验"是可变引用"，未比较被指向类型与右值类型。
+                        // 现在补 `*p = v` 中 v 类型与 *p 类型的兼容性检查（规则 2.2）。
+                        if pointee.is_known()
+                            && value_val.ty.is_known()
+                            && !pointee.compatible(&value_val.ty)
+                        {
+                            self.error(format!(
+                                "解引用赋值目标类型 {} 与表达式类型 {} 不匹配（规则 2.2）",
+                                pointee.display(),
+                                value_val.ty.display()
+                            ));
+                        }
                         self.ir.emit("*=", value_val.place, PLACEHOLDER, inner.place);
                     }
                     Type::Ref { mutable: false, .. } => {
@@ -468,7 +480,10 @@ impl Analyzer {
             Expr::Index { base, index } => {
                 // BUG B-2：原实现走 `gen_expr(target)` 读出 a[i] 到 temp，
                 // 然后 `= value _ temp`，数组本体从不被写。
-                // 现在分别求 base 与 index 的 place，并用新操作码 `[]=` 直接写回数组。
+                // 修复 1：分别求 base 与 index 的 place，并用新操作码 `[]=` 直接写回。
+                // 修复 BUG 1（嵌套）：当 base 自身是 Index/Field/Deref 时，
+                // `[]=` 只改了临时副本（如 `INDEX a 0 t1`、`[]= v 1 t1`），父级未被更新。
+                // 通过 `write_back_to_parent` 把修改后的临时值递归回写到祖先链。
                 if let Some(name) = root_identifier(target) {
                     if let Some(sym) = self.table.lookup(name) {
                         if !sym.mutable {
@@ -513,11 +528,14 @@ impl Analyzer {
                     ));
                 }
                 self.ir
-                    .emit("[]=", value_val.place, idx_v.place, base_v.place);
+                    .emit("[]=", value_val.place, idx_v.place, base_v.place.clone());
+                if is_place_chain(base) {
+                    self.write_back_to_parent(base, base_v.place);
+                }
             }
             Expr::Field { base, field } => {
                 // BUG B-3：与 B-2 同根。原实现把 a.n 读到 temp 后写入 temp，元组本体未被改。
-                // 现在直接用 `.=` 写回元组。
+                // 修复 BUG 2：当 base 自身是 Index/Field/Deref 时，递归把修改后的元组写回。
                 if let Some(name) = root_identifier(target) {
                     if let Some(sym) = self.table.lookup(name) {
                         if !sym.mutable {
@@ -573,11 +591,51 @@ impl Analyzer {
                     ));
                 }
                 self.ir
-                    .emit(".=", value_val.place, field.to_string(), base_v.place);
+                    .emit(".=", value_val.place, field.to_string(), base_v.place.clone());
+                if is_place_chain(base) {
+                    self.write_back_to_parent(base, base_v.place);
+                }
             }
             _ => {
                 self.error("赋值语句左侧不是合法左值".to_string());
             }
+        }
+    }
+
+    /// 把已经写入到 `modified_place`（即 `target` 求值得到的临时副本）的新值
+    /// 递归回写到 `target` 的祖先链。仅用于 Index/Field/Deref 的嵌套左值，
+    /// 修复 BUG 1（嵌套数组下标赋值）与 BUG 2（嵌套元组字段赋值）。
+    ///
+    /// 例：`a[0][1] = 9` 中，gen_assign 的 Index 分支已经发出
+    ///   INDEX a 0 t1          ; t1 = a[0]  （副本）
+    ///   []= 9 1 t1            ; t1[1] = 9
+    /// 然后用 `write_back_to_parent(base=Index{a,0}, modified=t1)` 续接：
+    ///   []= t1 0 a            ; a[0] = t1  （把修改写回原数组）
+    /// 三层及以上同理递归。
+    fn write_back_to_parent(&mut self, target: &Expr, modified_place: String) {
+        match target {
+            Expr::Index { base, index } => {
+                let base_v = self.gen_expr(base);
+                let idx_v = self.gen_expr(index);
+                self.ir
+                    .emit("[]=", modified_place, idx_v.place, base_v.place.clone());
+                if is_place_chain(base) {
+                    self.write_back_to_parent(base, base_v.place);
+                }
+            }
+            Expr::Field { base, field } => {
+                let base_v = self.gen_expr(base);
+                self.ir
+                    .emit(".=", modified_place, field.to_string(), base_v.place.clone());
+                if is_place_chain(base) {
+                    self.write_back_to_parent(base, base_v.place);
+                }
+            }
+            Expr::Unary { op: UnaryOp::Deref, expr } => {
+                let inner = self.gen_expr(expr);
+                self.ir.emit("*=", modified_place, PLACEHOLDER, inner.place);
+            }
+            _ => {}
         }
     }
 
@@ -675,8 +733,74 @@ impl Analyzer {
                 // BUG B-5：错误恢复——只报错并保留循环变量声明 + 走一遍循环体语义检查，
                 // 不发射任何 for 骨架 IR，避免出现 `= _ _ i` / `< i _ t` 等含占位的语义错误代码。
                 let v = self.gen_expr(other);
+                // 修复 BUG 4：PDF 规则 8.2 允许数组作为可迭代结构。
+                // 当被迭代对象是 `Type::Array { element, length }` 时走数组循环路径：
+                //   i = 0; L_start: t = i < length; IF_FALSE t L_end;
+                //   x = arr[i]; <body>; L_cont: i = i+1; goto L_start; L_end:
+                // length 在编译期已知，直接以字面量嵌入；
+                // 数组本体由 `gen_expr` 求值后用 `v.place` 作为 INDEX 的源。
+                if let Type::Array { element, length } = v.ty.clone() {
+                    let elem_ty = (*element).clone();
+                    let length = length;
+                    if let Some(node) = &binding.ty {
+                        let declared = from_node(node);
+                        if declared.is_known()
+                            && elem_ty.is_known()
+                            && !declared.compatible(&elem_ty)
+                        {
+                            self.error(format!(
+                                "for 循环变量 `{}` 注解类型 {} 与数组元素类型 {} 不一致（规则 5.2）",
+                                binding.name,
+                                declared.display(),
+                                elem_ty.display()
+                            ));
+                        }
+                    }
+                    self.push_scope();
+                    self.table.declare(VarSymbol::new(
+                        binding.name.clone(),
+                        elem_ty,
+                        binding.mutable,
+                        true,
+                    ));
+                    let idx_var = self.ir.new_temp();
+                    let label_start = self.ir.new_label();
+                    let label_cont = self.ir.new_label();
+                    let label_end = self.ir.new_label();
+                    self.ir.emit("=", "0".to_string(), PLACEHOLDER, &idx_var);
+                    self.ir.emit_label(&label_start);
+                    let t = self.ir.new_temp();
+                    self.ir
+                        .emit("<", idx_var.clone(), length.to_string(), &t);
+                    self.ir.emit_if_false(&t, &label_end);
+                    // 每轮把 arr[i] 写入循环变量
+                    self.ir
+                        .emit("INDEX", v.place.clone(), idx_var.clone(), &binding.name);
+                    if let Some(ctx) = self.func_ctx.as_mut() {
+                        ctx.loop_depth += 1;
+                        ctx.loop_labels.push(LoopLabels {
+                            start: label_cont.clone(),
+                            end: label_end.clone(),
+                            loop_expr_index: None,
+                        });
+                    }
+                    self.gen_block_stmt(body);
+                    if let Some(ctx) = self.func_ctx.as_mut() {
+                        ctx.loop_depth -= 1;
+                        ctx.loop_labels.pop();
+                    }
+                    self.ir.emit_label(&label_cont);
+                    let t2 = self.ir.new_temp();
+                    self.ir
+                        .emit("+", idx_var.clone(), "1".to_string(), &t2);
+                    self.ir.emit("=", t2, PLACEHOLDER, &idx_var);
+                    self.ir.emit_goto(&label_start);
+                    self.ir.emit_label(&label_end);
+                    self.pop_scope();
+                    return;
+                }
                 self.error(format!(
-                    "for 迭代结构必须是范围 `a..b`（实际类型 {}）",
+                    "for 迭代结构必须是范围 `a..b` 或数组（实际类型 {}）",
                     v.ty.display()
                 ));
                 self.push_scope();
@@ -1350,7 +1474,19 @@ impl Analyzer {
         // 只有分支真正产生值时才分配临时变量，避免 Unit/Unit 时的悬空 temp。
         let mut result_temp: Option<String> = None;
         let mut result_ty = then_val.ty.clone();
-        if !matches!(then_val.ty, Type::Unit) {
+        // 修复 BUG 5：无 else 的 if 表达式没有"条件为假"路径来提供值，整体必须是 ()。
+        // 若 then-tail 求出非 Unit 值，报错并强制结果类型为 Unit，
+        // 防止 `let x:i32 = if cond { 1 };` 被悄悄放行。
+        if !has_else
+            && then_val.ty.is_known()
+            && !matches!(then_val.ty, Type::Unit)
+        {
+            self.error(format!(
+                "无 `else` 的 `if` 表达式尾值必须为 `()`，实际类型 {}",
+                then_val.ty.display()
+            ));
+            result_ty = Type::Unit;
+        } else if !matches!(then_val.ty, Type::Unit) {
             let t = self.ir.new_temp();
             self.ir.emit("=", then_val.place, PLACEHOLDER, &t);
             result_temp = Some(t);
@@ -1435,6 +1571,18 @@ fn root_identifier(expr: &Expr) -> Option<&str> {
         Expr::Index { base, .. } | Expr::Field { base, .. } => root_identifier(base),
         _ => None,
     }
+}
+
+/// 判断表达式是否是"需要回写"的左值链（Index/Field/Deref），
+/// 即 `gen_expr` 会发出 INDEX/FIELD/DEREF 把值复制到新临时变量，
+/// 直接对该临时写 `[]=`/`.=`/`*=` 不会反映回原变量。
+fn is_place_chain(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Index { .. }
+            | Expr::Field { .. }
+            | Expr::Unary { op: UnaryOp::Deref, .. }
+    )
 }
 
 /// 将 BinaryOp 转为四元式 op 字符串及 (是否比较)。

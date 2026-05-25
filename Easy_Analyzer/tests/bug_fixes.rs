@@ -566,6 +566,235 @@ fn bug_b5_for_non_range_iterable_emits_no_loop_scaffold() {
     );
 }
 
+// ============================================================
+// 第四轮 BUG 修复回归（Round 4：嵌套写回 / Deref 类型 / for-array / then-only if）
+// ============================================================
+
+#[test]
+fn bug_r4n_nested_array_index_assign_writes_back() {
+    // 复现：a[0][1] = 9 必须把改后的内层数组回写到 a[0]，否则 a 不变。
+    // IR 应为：INDEX a 0 t1; []= 9 1 t1; []= t1 0 a
+    let r = run(
+        r#"
+        fn main() {
+            let mut a:[[i32;2];2] = [[1,2],[3,4]];
+            a[0][1] = 9;
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors.is_empty(),
+        "合法 a[0][1] = 9 不应报错：{:?}",
+        r.semantic_errors
+    );
+    let inner_store = r
+        .quadruples
+        .iter()
+        .position(|q| q.op == "[]=" && q.arg1 == "9" && q.arg2 == "1");
+    let inner_store = inner_store.expect("内层 []= 9 1 <temp> 应存在");
+    let temp = r.quadruples[inner_store].result.clone();
+    let writeback = r
+        .quadruples
+        .iter()
+        .any(|q| q.op == "[]=" && q.arg1 == temp && q.arg2 == "0" && q.result == "a");
+    assert!(
+        writeback,
+        "嵌套数组写回缺失：应有 `[]= {} 0 a`，实际 IR：{:?}",
+        temp, r.quadruples
+    );
+}
+
+#[test]
+fn bug_r4n_nested_tuple_field_assign_writes_back() {
+    // 复现：a.0.1 = 9 必须把改后的子元组回写到 a.0
+    let r = run(
+        r#"
+        fn main() {
+            let mut a:((i32,i32),i32) = ((1,2),3);
+            a.0.1 = 9;
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors.is_empty(),
+        "合法 a.0.1 = 9 不应报错：{:?}",
+        r.semantic_errors
+    );
+    let inner_store = r
+        .quadruples
+        .iter()
+        .position(|q| q.op == ".=" && q.arg1 == "9" && q.arg2 == "1");
+    let inner_store = inner_store.expect("内层 .= 9 1 <temp> 应存在");
+    let temp = r.quadruples[inner_store].result.clone();
+    let writeback = r
+        .quadruples
+        .iter()
+        .any(|q| q.op == ".=" && q.arg1 == temp && q.arg2 == "0" && q.result == "a");
+    assert!(
+        writeback,
+        "嵌套元组字段写回缺失：应有 `.= {} 0 a`，实际 IR：{:?}",
+        temp, r.quadruples
+    );
+}
+
+#[test]
+fn bug_r4n_mixed_array_in_tuple_writes_back() {
+    // a.0[1] = 9 ：array-in-tuple，写回链应是 .= t 0 a
+    let r = run(
+        r#"
+        fn main() {
+            let mut a:([i32;3],i32) = ([1,2,3],4);
+            a.0[1] = 9;
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors.is_empty(),
+        "合法 a.0[1] = 9 不应报错：{:?}",
+        r.semantic_errors
+    );
+    let inner_store = r
+        .quadruples
+        .iter()
+        .position(|q| q.op == "[]=" && q.arg1 == "9" && q.arg2 == "1");
+    let inner_store = inner_store.expect("内层 []= 9 1 <temp> 应存在");
+    let temp = r.quadruples[inner_store].result.clone();
+    let writeback = r
+        .quadruples
+        .iter()
+        .any(|q| q.op == ".=" && q.arg1 == temp && q.arg2 == "0" && q.result == "a");
+    assert!(
+        writeback,
+        "混合写回缺失：应有 `.= {} 0 a`，实际 IR：{:?}",
+        temp, r.quadruples
+    );
+}
+
+#[test]
+fn bug_r4n_deref_assign_checks_pointee_type() {
+    // *b = (1,2) 中 b:&mut i32，右值 (i32,i32) 与 i32 不兼容，必须报错。
+    let r = run(
+        r#"
+        fn main() {
+            let mut a:i32 = 1;
+            let b:&mut i32 = &mut a;
+            *b = (1, 2);
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("不匹配")),
+        "解引用赋值类型不匹配应被报：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_r4n_deref_assign_same_type_ok() {
+    // 同类型的 *b = v 不应报错（避免新检查误报）
+    let r = run(
+        r#"
+        fn main() {
+            let mut a:i32 = 1;
+            let b:&mut i32 = &mut a;
+            *b = 9;
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors.is_empty(),
+        "合法 *b = 9（i32 / &mut i32）不应报错：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_r4n_for_in_array_generates_loop_ir() {
+    // PDF 8.2：数组可迭代。for x in a 应正常生成循环骨架，且 body 中可读 x。
+    let r = run(
+        r#"
+        fn main() {
+            let a:[i32;3] = [10,20,30];
+            let mut sum:i32 = 0;
+            for x in a {
+                sum = sum + x;
+            }
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors.is_empty(),
+        "for x in a 不应报错（数组可迭代）：{:?}",
+        r.semantic_errors
+    );
+    // 必须出现 `INDEX a <idx-temp> x` 把当前元素写入循环变量
+    let has_elem_load = r
+        .quadruples
+        .iter()
+        .any(|q| q.op == "INDEX" && q.arg1 == "a" && q.result == "x");
+    assert!(
+        has_elem_load,
+        "for-array 应在 body 前发出 `INDEX a <i> x`，实际 IR：{:?}",
+        r.quadruples
+    );
+    // 循环长度应以字面量 3 出现在比较中
+    let has_len_cmp = r
+        .quadruples
+        .iter()
+        .any(|q| q.op == "<" && q.arg2 == "3");
+    assert!(
+        has_len_cmp,
+        "for-array 应有 `< <i> 3 <t>` 边界比较：{:?}",
+        r.quadruples
+    );
+}
+
+#[test]
+fn bug_r4n_for_in_non_iterable_still_rejected() {
+    // 非数组、非范围的迭代源仍应报错（错误信息更新为含"或数组"）
+    let r = run(
+        r#"
+        fn main() {
+            let k:i32 = 1;
+            for i in k { let _x:i32 = i; }
+        }
+        "#,
+    );
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("for 迭代结构必须是范围")),
+        "非可迭代源应报错：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_r4n_then_only_if_with_nonunit_tail_rejected() {
+    // `let x:i32 = if cond { 1 };` 必须报错——无 else 时整体类型必须是 ()
+    let r = run("fn main(){ let x:i32 = if 1 == 1 { 1 }; }");
+    assert!(
+        r.semantic_errors
+            .iter()
+            .any(|e| e.message.contains("无 `else`") || e.message.contains("尾值必须为")),
+        "无 else 的 if 表达式尾值非 () 应报错：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_r4n_then_only_if_unit_tail_ok() {
+    // 无 else 但 then 是 Unit 应继续合法（不是 BUG 5 范围内的回归点）
+    let r = run("fn main(){ if 1 == 1 { let _x:i32 = 1; } }");
+    assert!(
+        r.semantic_errors.is_empty(),
+        "无 else 但 then 是 Unit 仍应合法：{:?}",
+        r.semantic_errors
+    );
+}
+
 #[test]
 fn bug_r6_call_variable_says_not_a_function() {
     // 把变量当函数调用，应说"不是函数"，而不是"未声明"
