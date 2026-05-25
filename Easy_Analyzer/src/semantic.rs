@@ -125,6 +125,27 @@ impl Analyzer {
         self.errors.push(SemanticError::new(msg));
     }
 
+    fn validate_type(&mut self, ty: &Type, context: impl AsRef<str>) {
+        match ty {
+            Type::Array { element, length } => {
+                if *length == 0 {
+                    self.error(format!(
+                        "{} array length must be a positive integer constant, got 0 (rule 8.1)",
+                        context.as_ref()
+                    ));
+                }
+                self.validate_type(element, context);
+            }
+            Type::Ref { inner, .. } => self.validate_type(inner, context),
+            Type::Tuple { elements } => {
+                for element in elements {
+                    self.validate_type(element, context.as_ref());
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn push_scope(&mut self) {
         self.table.push_scope();
         self.borrow_scopes.push(HashMap::new());
@@ -269,6 +290,10 @@ impl Analyzer {
             .cloned()
             .expect("函数签名应已登记");
         let return_type = sig.return_type.clone();
+        self.validate_type(&return_type, format!("function `{}` return type", f.name));
+        for (pname, pty, _) in &sig.params {
+            self.validate_type(pty, format!("function `{}` parameter `{}` type", f.name, pname));
+        }
 
         // 生成函数头
         self.ir.emit("FUNC", &f.name, PLACEHOLDER, PLACEHOLDER);
@@ -393,6 +418,9 @@ impl Analyzer {
 
         // 声明类型
         let declared_ty = binding.ty.as_ref().map(from_node);
+        if let Some(ty) = &declared_ty {
+            self.validate_type(ty, format!("variable `{}` declared type", binding.name));
+        }
 
         let (final_ty, initialized) = if let Some(expr) = init {
             let v = self.gen_expr(expr);
@@ -441,6 +469,12 @@ impl Analyzer {
                         self.error(format!(
                             "不能把函数 `{}` 作值绑定（应加 `()` 调用）（规则 3.5）",
                             v.place
+                        ));
+                        Type::Error
+                    } else if matches!(init, Some(Expr::Array { elements }) if elements.is_empty()) {
+                        self.error(format!(
+                            "empty array literal cannot infer element type or positive length for variable `{}` (rule 8.2)",
+                            binding.name
                         ));
                         Type::Error
                     } else {
@@ -837,6 +871,10 @@ impl Analyzer {
                     let length = length;
                     if let Some(node) = &binding.ty {
                         let declared = from_node(node);
+                        self.validate_type(
+                            &declared,
+                            format!("for loop variable `{}` annotated type", binding.name),
+                        );
                         if declared.is_known()
                             && elem_ty.is_known()
                             && !declared.compatible(&elem_ty)
@@ -932,6 +970,10 @@ impl Analyzer {
         // （之前实现完全忽略 binding.ty，导致 `for i:[i32;3] in 0..3` 被静默吞掉）
         if let Some(node) = &binding.ty {
             let declared = from_node(node);
+            self.validate_type(
+                &declared,
+                format!("for loop variable `{}` annotated type", binding.name),
+            );
             if declared.is_known()
                 && start_ty.is_known()
                 && !declared.compatible(&start_ty)

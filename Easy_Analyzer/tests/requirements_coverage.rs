@@ -110,6 +110,8 @@ fn deeper_composite_and_loop_errors() {
 
 #[test]
 fn extended_array_errors() {
+    assert_error_contains("fn main(){ let a:[i32;0]=[]; }", &["positive", "0"]);
+    assert_error_contains("fn main(){ let a=[]; }", &["empty array"]);
     assert_error_contains(
         "fn main(){ let a:[i32;2]=[1,2,3]; }",
         &["数组长度不匹配", "2", "3"],

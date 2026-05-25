@@ -1,5 +1,5 @@
 //! 中等 BUG 修复后的最小复现测试。
-//! - BUG #4：空数组字面量 `let a:[i32;0]=[];` 不应报"类型不匹配"
+//! - Rule 8.1：空数组字面量 `let a:[i32;0]=[];` 应按 PPT 正长度要求报错
 //! - BUG #5：Server `TokenView.type_enum` serde 字段名（由 Easy_Server 的测试覆盖；
 //!   此处仅作回归占位以集中跟踪修复点）
 //! - BUG #6：函数名作实参时应报"实参类型不一致"而非"未声明"
@@ -16,11 +16,11 @@ fn run(src: &str) -> easy_analyzer::AnalysisResult {
 }
 
 #[test]
-fn bug4_empty_array_literal_zero_length_ok() {
+fn bug4_empty_array_literal_zero_length_rejected() {
     let r = run("fn main(){ let a:[i32;0]=[]; }");
     assert!(
-        r.semantic_errors.is_empty(),
-        "[i32;0] = [] 应被接受，实际报错：{:?}",
+        !r.semantic_errors.is_empty(),
+        "[i32;0] = [] should be rejected by rule 8.1, got no errors: {:?}",
         r.semantic_errors
     );
 }
