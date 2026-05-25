@@ -590,4 +590,30 @@
 修改文件：`Easy_Analyzer/src/semantic.rs`、`Easy_Analyzer/tests/bug_fixes.rs`。
 回归结果：除 `cand_kk_range_value_stored_and_iterated`（parser 限制）外全部通过；无新增 warning。
 
-**累积统计（8 轮）**：共修复 **30 条真 BUG**，归档 16 条设计偏差。第八轮真正达到"无新真 BUG"停止条件，建议归档收官。
+**累积统计（8 轮）**：共修复 **30 条真 BUG**，归档 16 条设计偏差。
+
+---
+
+# 第九轮：R9-1（已修复）
+
+第九轮做 R8-1 修复的回归验证 + 同类放大，抓出 1 条 R8-1 的二阶副作用。
+
+### BUG R9-1 i32::MIN IR 中 `NEG 2147483648 _ t` 的正部分无法被下游 parse::<i32>() ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs::gen_unary`（Neg 分支）
+- **现象**：`fn main(){ let x:i32 = -2147483648; }` 经 R8-1 修复后 semantic 通过，但生成的 IR：
+  ```
+  NEG 2147483648 _ t1
+  =   t1 _ x
+  ```
+  下游 `tests/ir_interpreter.rs::value_of` 等用 `name.parse::<i32>()` 区分立即数 vs 变量；`"2147483648"` parse 失败 → 当变量查找 → panic "unknown operand 2147483648"。
+- **根因**：R8-1 只解决了"语义层接受 i32::MIN"，但 IR 的 arg1 仍保留无法被 i32 立即数解析的字符串，违反"立即数必须 parse::<i32>() 通过"的隐式不变量。
+- **修法**：在 `gen_unary` 引入 `folded_min` 标志，针对 `(Neg, Number)` 且 `value.parse::<i32>().is_err() && format!("-{}", value).parse::<i32>().is_ok()`（这一条件只能由 `2147483648` 触发）的独苗情形，跳过 NEG 四元式发射，直接以合并后的 `"-2147483648"` 作为立即数。常规 `-1` / `-2` 等仍走 NEG 路径不变。
+- **回归测试**：`tests/bug_fixes.rs::bug_r9_neg_i32_min_ir_folded_to_immediate` + `bug_r9_small_neg_literal_keeps_neg_quad`。
+
+## 第九轮影响面
+
+修改文件：`Easy_Analyzer/src/semantic.rs`、`Easy_Analyzer/tests/bug_fixes.rs`。
+回归结果：除 `cand_kk_range_value_stored_and_iterated`（parser 限制）外全部通过；无新增 warning。
+
+**累积统计（9 轮）**：共修复 **31 条真 BUG**，归档 16 条设计偏差。R9-1 揭示了"语义层修复 + IR 不变量"的耦合——单点修复需同时考虑下游 IR 消费者的隐式契约。

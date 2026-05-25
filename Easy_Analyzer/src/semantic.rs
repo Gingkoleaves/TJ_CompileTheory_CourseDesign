@@ -1175,6 +1175,16 @@ impl Analyzer {
         // R8-1: -2147483648 (i32::MIN) 的正部分 2147483648 超出 i32::MAX，
         // 直接走 gen_expr(Expr::Number) 会被 R4-1 误判溢出。这里在 Neg 分支
         // 拦截 Expr::Number，按合成后的值校验 i32 范围。
+        // R9-1: 进一步——若正部分本身已经超 i32::MAX 但合并后仍合法（即
+        // i32::MIN 这一独苗），不再发 NEG 四元式，直接以合并后的 "-2147483648"
+        // 作为立即数返回，避免下游 IR 解释器把无法 parse::<i32>() 的
+        // "2147483648" 当变量名查找失败。
+        let folded_min = matches!(
+            (op, inner),
+            (UnaryOp::Neg, Expr::Number { value })
+                if value.parse::<i32>().is_err()
+                    && format!("-{}", value).parse::<i32>().is_ok()
+        );
         let v = match (op, inner) {
             (UnaryOp::Neg, Expr::Number { value }) => {
                 if format!("-{}", value).parse::<i32>().is_err() {
@@ -1182,8 +1192,12 @@ impl Analyzer {
                         "整数字面量 `-{}` 超出 i32 范围（规则 0.1）",
                         value
                     ));
+                    ExprValue::new(Type::I32, value.clone())
+                } else if folded_min {
+                    ExprValue::new(Type::I32, format!("-{}", value))
+                } else {
+                    ExprValue::new(Type::I32, value.clone())
                 }
-                ExprValue::new(Type::I32, value.clone())
             }
             _ => self.gen_expr(inner),
         };
@@ -1194,6 +1208,10 @@ impl Analyzer {
                         "一元 `-` 仅支持 i32，实际类型 {}",
                         v.ty.display()
                     ));
+                }
+                if folded_min {
+                    // 直接返回合并后的立即数 "-2147483648"，跳过 NEG 四元式
+                    return ExprValue::new(Type::I32, v.place);
                 }
                 let t = self.ir.new_temp();
                 self.ir.emit("NEG", v.place, PLACEHOLDER, &t);

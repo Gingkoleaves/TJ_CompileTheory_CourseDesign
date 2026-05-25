@@ -807,6 +807,38 @@ fn bug_r8_neg_i32_min_literal_accepted() {
 }
 
 #[test]
+fn bug_r9_neg_i32_min_ir_folded_to_immediate() {
+    // R9-1：i32::MIN 必须直接以合并立即数 "-2147483648" 出现在 IR，
+    // 不能保留 NEG 四元式（因为正部分 "2147483648" 无法被
+    // parse::<i32>()，下游解释器会把它当变量名 panic）
+    let r = run("fn main(){ let x:i32 = -2147483648; }");
+    assert!(r.semantic_errors.is_empty());
+    let neg_count = r.quadruples.iter().filter(|q| q.op == "NEG").count();
+    assert_eq!(neg_count, 0, "i32::MIN 应折叠为立即数，不发 NEG：{:?}", r.quadruples);
+    assert!(
+        r.quadruples
+            .iter()
+            .any(|q| q.op == "=" && q.arg1 == "-2147483648" && q.result == "x"),
+        "应有 `= -2147483648 _ x`：{:?}",
+        r.quadruples
+    );
+}
+
+#[test]
+fn bug_r9_small_neg_literal_keeps_neg_quad() {
+    // R9-1 边界：常规小负数仍应走 NEG 路径，不被误折叠
+    let r = run("fn main(){ let x:i32 = -1; }");
+    assert!(r.semantic_errors.is_empty());
+    assert!(
+        r.quadruples
+            .iter()
+            .any(|q| q.op == "NEG" && q.arg1 == "1"),
+        "-1 仍应发 NEG 1 _ tN：{:?}",
+        r.quadruples
+    );
+}
+
+#[test]
 fn bug_r8_neg_i32_min_minus_one_rejected() {
     // R8-1 边界：-2147483649 仍应报溢出
     let r = run("fn main(){ let x:i32 = -2147483649; }");
