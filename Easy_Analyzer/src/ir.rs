@@ -10,7 +10,7 @@
 //! - `< <= > >= == !=`：比较 `(cmp, a, b, t)`，结果为 0/1
 //! - `NEG`：取负 `(NEG, a, _, t)`
 //! - `FUNC` / `END_FUNC`：函数边界 `(FUNC, name, _, _)`
-//! - `PARAM_DECL`：形参声明 `(PARAM_DECL, name, type, _)`
+//! - `PARAM_DECL`：形参声明 `(PARAM_DECL, name, type, mut|_)`；第四元 `mut` 表示该形参声明为可变（R5-4）
 //! - `PARAM`：传参 `(PARAM, value, _, _)`
 //! - `CALL`：调用 `(CALL, name, argc, result)`；void 时 result 为 `_`
 //! - `RETURN`：返回 `(RETURN, value_or_underscore, _, _)`

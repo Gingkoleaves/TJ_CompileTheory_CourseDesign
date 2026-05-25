@@ -387,3 +387,93 @@
   ```
   错误延迟到"使用点"才出现，且消息把已是变量的 `g` 仍称作"函数"，与 R3-5 同名提示风格不一致。
 - **设计选择**：保留不修。当前实现错误能报、IR 形态稳定（`= f _ g` 形态对下游友好），仅措辞略失真；改严格的成本主要在错误信息测试预期的整体重新对齐。详见 `discussions.md` 的 **D-7**。
+
+---
+
+# 第五轮：R5-1~R5-9
+
+基线：#1-#16、R-1~R-6、R3-1~R3-5、R4-1 已全部修复；R3-6 / R3-7 / R4-2 / R4-3 已并入 `discussions.md`（分别对应 D-3/D-4 / D-4 / D-6 / D-7）。
+
+本轮通过 finder agent 写下的 `tests/r5_focus.rs` 与 `tests/r5_probe.rs` 两份探针文件，对前四轮未覆盖的盲点做穷尽式扫描，定位出 11 条候选，最终归类为 5 条真 BUG（已修复）、2 条设计选择（入 `discussions.md`）、4 条非 BUG（验证后撤回）。
+
+## 🟠 中度（漏检非法代码 / 信息丢失） — 5 条 ✅ 已修复
+
+### BUG R5-1 `&mut <rvalue>` / `&mut <literal>` 未拦截  ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:1188-1213`（`gen_unary` 的 `UnaryOp::RefMut` 分支）
+- **现象**：
+  ```rust
+  fn main(){ let p = &mut 1; }                       // 修复前：无任何错误
+  fn f()->i32{1} fn main(){ let p:&mut i32 = &mut f(); }   // 修复前：无任何错误
+  ```
+- **Rust 严格语义**：rustc 报 `cannot borrow ... as mutable`，理由是右值没有可绑定的左值根。
+- **修法**：在 `RefMut` 分支中，若 `root_identifier(inner)` 返回 `None` 且 `v.ty.is_known()`，调用 `self.error("`&mut` 只能作用于可变变量、字段或下标（规则 6.3）")`，并把结果类型置为 `Type::Error`。
+- **未影响 `&` 不变借用**：rustc 允许 `&1`（生成临时存活到语句末），本课程同样保留宽松。
+- **验证**：`focus_a_refmut_of_literal_is_unchecked` 与 `focus_h_refmut_rvalue_in_let` 均报出新错误。
+
+### BUG R5-2 `break <function_name>;` 未拦截，函数项渗入变量表  ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:925-946`（`gen_break` 写入 `break_type` 之前）
+- **现象**：
+  ```rust
+  fn g(){}
+  fn main(){
+      let x = loop { break g; };   // 修复前：0 错；x 类型推断为 Type::Function
+  }
+  ```
+  与 R3-5 / R4-3 同源——函数项不能作为值参与表达式类型推断。
+- **修法**：在 `gen_break` 收集到 `v` 后、写入 `ctx.break_type` 之前，单独检查 `v.ty == Type::Function`，报 `` "`break` 表达式不能是函数名 `{}`（请加 `()` 调用，规则 5.2）" `` 并把 `v.ty` 置为 `Type::Error`，防止 `Function` 类型经 `break_type` 渗入 loop 表达式类型推断。
+- **验证**：`focus_b_break_function_name_in_loop_unchecked` 修复后正确报错；IR 仍发 `BREAK g _ L2`（错误恢复保形态，参见 D-9 同源主张）。
+
+### BUG R5-4 `PARAM_DECL` 第四元丢失 `mut` 信息  ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:222-233`（`gen_function` 发射 `PARAM_DECL` 的循环）
+- **现象**：`fn f(mut a:i32, b:i32){}` 与 `fn f(a:i32, b:i32){}` 生成的 `PARAM_DECL` 一模一样，第四元一律是 `_`，下游解释器无法区分形参可变性。
+- **修法**：把第四元从一律的 `PLACEHOLDER` 改为 `if *pmut { "mut" } else { PLACEHOLDER }`；同时在 `Easy_Analyzer/src/ir.rs` IR 形态注释里补充第四元语义说明。
+- **下游断言面**：确认无下游 IR 解释器测试硬编码 `PARAM_DECL ... _` 第四元为占位符；改动安全。
+- **验证**：`focus_o_param_mut_marker_in_paramdecl_lost` 输出 `PARAM_DECL a i32 mut` / `PARAM_DECL b i32 _`，符合预期。
+
+### BUG R5-7 未初始化变量被使用仍发射 `= x _ y`  ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:1149-1159`（`gen_identifier` 报"赋值前使用"的分支）
+- **现象**：
+  ```rust
+  fn main(){ let x:i32; let y:i32 = x; }
+  ```
+  修复前：报 `变量 `x` 在赋值前被使用（规则 2.2）` 但 IR 仍发 `= x _ y`，下游解释器读未定义槽位会触发 runtime panic。
+- **修法**：报错后把 `ExprValue.place` 置为 `PLACEHOLDER`，下游 `gen_let` 会发射 `= _ _ y`；解释器对占位符读取做忽略处理，错误恢复期 IR 安全。
+- **验证**：`focus_l_uninit_used_emits_assign_with_uninit_name` 输出 `= _ _ y`，符合预期。
+
+### BUG R5-9 parser 数组长度溢出 usize 时错误信息措辞偏离  ✅
+
+- **位置**：`Easy_Parser/src/lib.rs:356-359`（数组类型解析 `parse::<usize>()` 失败的 `map_err` 处）
+- **现象**：`fn main(){ let a:[i32;99999999999999999999] = []; }` 修复前报 `expected numeric literal`，与"已读到一个数字字面量但太大"的真实情形不符，容易让用户误以为输入不是数字。
+- **修法**：把错误消息改为 `"array length too large for usize"`，明确指向 usize 溢出。
+- **验证**：`focus_e_huge_array_length_in_typenode` 报出新错误措辞，符合预期。
+
+## 🔵 设计选择（保留现状，详见 `discussions.md`） — 2 条
+
+### BUG R5-5 → 入 D-8 缺少强制 main 函数检查
+
+- **位置**：`analyze_program`
+- **现象**：`fn foo(){}` 单一程序无 `main` 仍能通过语义分析。
+- **设计选择**：PDF 规则 1.1–9.3 未强制 `main` 必须存在；测试样例尺寸小、保留宽松便于拼装。详见 `discussions.md` 的 **D-8**。
+
+### BUG R5-6 → 入 D-9 `Unit` / `Error` 条件仍发 `IF_FALSE _ _ L2`
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:1478` 附近 `emit_if_false`
+- **现象**：`if g() {}`（`g()` 返回 `Unit`）报 `条件类型 () 不可作为条件`，但 IR 中第二元落为占位符 `_`，解释器会把占位符当 0 总跳到 end。
+- **设计选择**：与 D-4 / D-7 一脉相承——错误恢复阶段优先保 IR 形态稳定；下游解释器对占位符读取安全。详见 `discussions.md` 的 **D-9**。
+
+## ✅ 第五轮验证为非 BUG 的范围
+
+- **R5-3**：`undef(f())` 中函数参数仍发 `CALL` 四元式——这是"错误恢复期内表达式子树照常 codegen"的正常副作用，与 D-3 / D-4 同源；不视作 BUG。
+- **R5-8**：`let a:[i32;0] = []; let b:i32 = a[i];` 零长数组动态下标——当前实现已对常量字面量下标做静态越界检查；动态下标由运行时 bounds check 兜底（与 D-6 同源）；不视作 BUG。
+- **R5-10**：`let a:[i32;1] = [g];` 函数名作数组元素——已被 `gen_array` 的元素类型一致性检查在使用点拦截；不视作 BUG。
+- **R5-11**：`let t:(i32,i32) = (g, 1);` 函数名作元组元素——已被声明类型检查在 `let` 处拦截；不视作 BUG。
+
+## 第五轮影响面
+
+修改文件：`Easy_Analyzer/src/semantic.rs`、`Easy_Analyzer/src/ir.rs`、`Easy_Parser/src/lib.rs`。
+新增测试：`Easy_Analyzer/tests/r5_focus.rs`（15 个聚焦用例）、`Easy_Analyzer/tests/r5_probe.rs`（探测过程记录）。
+回归结果：除 `cand_kk_range_value_stored_and_iterated`（parser 限制，前四轮就 FAIL）外全部通过；无新增 warning。

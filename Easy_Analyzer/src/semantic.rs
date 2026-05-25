@@ -221,12 +221,15 @@ impl Analyzer {
 
         // 生成函数头
         self.ir.emit("FUNC", &f.name, PLACEHOLDER, PLACEHOLDER);
-        for (i, (pname, pty, _pmut)) in sig.params.iter().enumerate() {
+        for (i, (pname, pty, pmut)) in sig.params.iter().enumerate() {
             if param_skip[i] {
                 continue;
             }
+            // R5-4: PARAM_DECL 第四元用于携带 `mut` 标记。
+            // 之前一律填占位符 `_`，下游解释器无法区分 `fn f(mut a, b)` 与 `fn f(a, b)`。
+            let mut_marker = if *pmut { "mut" } else { PLACEHOLDER };
             self.ir
-                .emit("PARAM_DECL", pname.clone(), pty.display(), PLACEHOLDER);
+                .emit("PARAM_DECL", pname.clone(), pty.display(), mut_marker);
         }
 
         // 进入函数作用域，登记形参
@@ -926,6 +929,22 @@ impl Analyzer {
         //   (2) 无值 break  在 for/while 内 → 正常 break，不影响 loop 表达式类型推断
         //   (3) 带值 break  在 loop {} 内   → 写 result_place 并参与类型推断
         //   (4) 带值 break  在 for/while 内 → 报错：`break <expr>` 仅 loop 支持
+        // R5-2: `break <function_name>;` —— 函数项不能作为 break 表达式值。
+        // 在写入 break_type 前直接报错并把 v.ty 置为 Type::Error，
+        // 防止 Type::Function 随 break_type 渗入 loop 表达式类型推断，
+        // 进而落入变量表（如 `let x = loop { break g; };` 让 x: Function）。
+        let v = match v {
+            Some(mut vv) if matches!(vv.ty, Type::Function) => {
+                self.error(format!(
+                    "`break` 表达式不能是函数名 `{}`（请加 `()` 调用，规则 5.2）",
+                    vv.place
+                ));
+                vv.ty = Type::Error;
+                Some(vv)
+            }
+            other => other,
+        };
+
         let arg = match (&v, loop_expr_index) {
             // (3) loop {} 带值 break
             (Some(v), Some(idx)) => {
@@ -1133,6 +1152,10 @@ impl Analyzer {
                         "变量 `{}` 在赋值前被使用（规则 2.2）",
                         name
                     ));
+                    // R5-7: 未初始化变量被使用时把 place 置为占位符 `_`，
+                    // 避免下游 IR 出现 `= x _ y`（x 未赋值）误导解释器读未定义槽位。
+                    // 现 IR 形态变为 `= _ _ y`，解释器忽略占位读取。
+                    return ExprValue::new(ty, PLACEHOLDER.to_string());
                 }
                 ExprValue::new(ty, name.to_string())
             }
@@ -1173,11 +1196,20 @@ impl Analyzer {
                         }
                     }
                     self.register_borrow(name, true);
+                    ExprValue::new(
+                        Type::Ref { mutable: true, inner: Box::new(v.ty) },
+                        format!("&mut {}", v.place),
+                    )
+                } else {
+                    // R5-1: `&mut <rvalue>` / `&mut <literal>` / `&mut <call>()` 等
+                    // 没有可绑定的左值根。Rust 拒绝；本课程同样视为非法。
+                    if v.ty.is_known() {
+                        self.error(
+                            "`&mut` 只能作用于可变变量、字段或下标（规则 6.3）".to_string(),
+                        );
+                    }
+                    ExprValue::new(Type::Error, format!("&mut {}", v.place))
                 }
-                ExprValue::new(
-                    Type::Ref { mutable: true, inner: Box::new(v.ty) },
-                    format!("&mut {}", v.place),
-                )
             }
             UnaryOp::Deref => match v.ty {
                 Type::Ref { inner, .. } => {

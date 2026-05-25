@@ -356,7 +356,7 @@ impl<'a> Parser<'a> {
             let length = self
                 .expect_number_text("expected array length in array type")?
                 .parse::<usize>()
-                .map_err(|_| self.error_here("expected numeric literal"))?;
+                .map_err(|_| self.error_here("array length too large for usize"))?;
             self.expect_simple(SimpleTokenKind::RBracket, "expected `]` after array type")?;
             return Ok(TypeNode::Array {
                 element: Box::new(element),
