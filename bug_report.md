@@ -477,3 +477,69 @@
 修改文件：`Easy_Analyzer/src/semantic.rs`、`Easy_Analyzer/src/ir.rs`、`Easy_Parser/src/lib.rs`。
 新增测试：`Easy_Analyzer/tests/r5_focus.rs`（15 个聚焦用例）、`Easy_Analyzer/tests/r5_probe.rs`（探测过程记录）。
 回归结果：除 `cand_kk_range_value_stored_and_iterated`（parser 限制，前四轮就 FAIL）外全部通过；无新增 warning。
+
+# 第六轮：R6-1（已修复）/ R6-2 ~ R6-5
+
+第六轮 finder 在 R5 之后对 Lexer / Parser / 跨 crate panic / 边界路径做了一次扫描。
+共提出 5 个候选；1 个修复，4 个判定为"设计选择"入 `discussions.md`。
+
+## 🟢 已修复 — 1 条
+
+### BUG R6-1 形参与函数同名漏检（一致性 gap）  ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:200-220`（`analyze_function` 形参遍历段）
+- **现象**：`fn f(f:i32){}` 当前 0 错；但 `fn f(){} fn main(){ let f:i32 = 1; }`
+  已被 R3-5 检查报"变量名 `f` 与现有函数同名"。形参声明走 `table.declare`
+  时未复用 R3-5 检查，导致同样的二义性场景一边管一边不管。
+- **修法**：在形参遍历中，每个 `p.name` 在 declare 之前调用 `self.table.lookup_function`，
+  若 `Some` 则报"形参 `{}` 与现有函数同名，可能导致调用 vs 取值的解析二义性"。
+  错误信息措辞与 R3-5 的 `gen_let` 分支对齐。
+- **下游影响面**：仅新增一条诊断，不动 IR 形态。
+- **验证**：`fn f(f:i32){}` 修复后报出新错误；R3-5 既有用例不受影响。
+
+## 🔵 设计选择（保留现状，详见 `discussions.md`） — 4 条
+
+### BUG R6-2 → 入 D-10 Lexer 按字节计列号
+
+- **位置**：`Easy_Lexer/src/lib.rs:361-371`（`advance`）
+- **现象**：源码 `中a`，错误位置 `(1,1)`/`(1,2)`/`(1,3)`，'a' 在 `(1,4)`；
+  期望 `(1,2)`（按字符计）。
+- **设计选择**：主线 ASCII 程序无影响；改严格代价大于诊断收益。详见 `discussions.md` 的 **D-10**。
+
+### BUG R6-3 → 入 D-11 Parser 链式比较 `a<b<c` 被接受
+
+- **位置**：`Easy_Parser/src/lib.rs:549-562`（`parse_expression` 比较运算累积）
+- **现象**：`a<b<c` 解析为 `(a<b)<c`，到语义阶段才报"`<` 仅支持 i32"。
+- **设计选择**：与 D-3 / D-9 同源，parse 层保持简单左结合栈，语义阶段统一兜底。详见 `discussions.md` 的 **D-11**。
+
+### BUG R6-4 → 入 D-12 悬垂引用 / 返回局部引用未拦截
+
+- **位置**：`Easy_Analyzer/src/semantic.rs::gen_return` 与 `gen_unary` 的 `Ref` 分支
+- **现象**：`fn f()->&i32 { let x:i32=1; return &x; }` 0 错；
+  Rust 报 `cannot return reference to local variable`。
+- **设计选择**：本课程无生命周期 / 借用作用域追踪，超出 PDF 规则覆盖面，
+  与 D-1 / D-2 一脉相承。详见 `discussions.md` 的 **D-12**。
+
+### BUG R6-5 → 入 D-13 尾随逗号在参数列表 / 元组类型中被拒
+
+- **位置**：`Easy_Parser/src/lib.rs:313-333`（`parse_parameter_list`）
+- **现象**：`fn f(a:i32,) {}` parse error。
+- **设计选择**：按 PDF 文法落地，与"严格按文法实现"保持口径一致。详见 `discussions.md` 的 **D-13**。
+
+## ✅ 第六轮验证为非 BUG 的范围
+
+- **CRLF 行尾**：Lexer / Parser 路径全程使用 `\n` 判定换行，对 `\r\n` 输入未观察到行号 / 错位异常。
+- **嵌套块注释 `/* /* */ */`**：Lexer 当前不识别嵌套注释（与 PDF 文法一致），
+  但不会触发 panic，外层 `*/` 正常闭合，未观察到 UB。
+- **极深括号 / 表达式嵌套**：探针生成 1000 层 `((((…))))` 输入，
+  parser 走递归下降未栈溢出（受 Rust 默认 8 MiB 栈兜底），analyzer 同样稳定返回。
+- **嵌套左值 `a[i].x = …` / `*p.x = …`**：R4-1 修复后的写回路径覆盖所有探针组合，
+  未发现新的"写回丢失"或"误报赋值前使用"。
+- **跨 crate panic 路径全扫描**：60 个探针用例覆盖 Lexer / Parser / Analyzer 所有公共入口，
+  无一触发 panic（含未识别字符、字符串字面量未闭合、空程序、单个分号等病态输入）。
+
+## 第六轮影响面
+
+修改文件：`Easy_Analyzer/src/semantic.rs`。
+新增测试：`Easy_Analyzer/tests/r6_probe.rs`、`r6_probe2.rs`、`r6_probe3.rs`（共 60 个探针用例）。
+回归结果：除 `cand_kk_range_value_stored_and_iterated`（parser 限制，前四轮就 FAIL）外全部通过；无新增 warning。

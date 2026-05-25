@@ -210,6 +210,15 @@ impl Analyzer {
                 self.error(format!("函数 `{}` 形参 `{}` 重名", f.name, p.name));
                 param_skip[i] = true;
             }
+            // R6-1：与 R3-5（`gen_let` 中变量名与函数同名）的检查保持一致。
+            // 形参声明同样会让 `gen_identifier` / `gen_call` 走不同分支，
+            // 形参名与既有函数名同名会引发调用 vs 取值的解析二义性。
+            if self.table.lookup_function(&p.name).is_some() {
+                self.error(format!(
+                    "形参 `{}` 与现有函数同名，可能导致调用 vs 取值的解析二义性",
+                    p.name
+                ));
+            }
         }
 
         let sig = self
