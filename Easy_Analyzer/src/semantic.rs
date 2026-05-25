@@ -53,6 +53,11 @@ struct LoopLabels {
     start: String,
     /// 跳出的标签：循环结构结束位置。
     end: String,
+    /// 当前循环若是 `loop {}` 表达式，记录其在 `loop_exprs` 中的下标；
+    /// `for/while` 推 None（不允许 `break <expr>`，且没有 result_place）。
+    /// 该字段把 `loop_labels` 与 `loop_exprs` 两个栈的对应关系显式绑定，
+    /// 避免 R3-1（内层 for/while 的 `break <expr>` 写到外层 loop 的 result_place）。
+    loop_expr_index: Option<usize>,
 }
 
 struct FuncCtx {
@@ -264,9 +269,21 @@ impl Analyzer {
             self.ir.emit("RETURN", v.place, PLACEHOLDER, PLACEHOLDER);
         } else {
             // 无尾表达式时始终发射 RETURN 作为函数终结子，便于下游解释/翻译。
-            // 非 Unit 返回类型的源码若所有路径都已通过显式 return 退出，
-            // 该终结子不可达；若存在 fall-through 路径，则该终结子被执行（值未定义）。
-            // 这里不做控制流分析，不额外报错。
+            // R3-3：若函数声明非 Unit 且函数体最后一条语句也不是显式 return，
+            // 说明存在 fall-through 路径而无返回值。这里做最朴素的"末尾静态检查"
+            // （非完整控制流分析）：仅当 body.statements 末尾不是 Statement::Return
+            // 时报错，避免漏掉 `fn main()->i32 { let a:i32 = 1; }` 这种情况。
+            if !matches!(return_type, Type::Unit) {
+                let last_is_return =
+                    matches!(f.body.statements.last(), Some(Statement::Return { .. }));
+                if !last_is_return {
+                    self.error(format!(
+                        "函数 `{}` 声明返回类型 {}，但函数体无 return 或尾表达式（规则 1.5）",
+                        f.name,
+                        return_type.display()
+                    ));
+                }
+            }
             self.ir
                 .emit("RETURN", PLACEHOLDER, PLACEHOLDER, PLACEHOLDER);
         }
@@ -298,6 +315,16 @@ impl Analyzer {
     }
 
     fn gen_let(&mut self, binding: &easy_parser::Binding, init: Option<&Expr>) {
+        // R3-5：变量名与既有函数名同名会导致 `gen_identifier` 与 `gen_call`
+        // 走不同分支（一个查变量表、一个查函数表），产生调用/取值二义性。
+        // 在 let 处报警告，让用户改名。
+        if self.table.lookup_function(&binding.name).is_some() {
+            self.error(format!(
+                "变量名 `{}` 与现有函数同名，可能导致调用 vs 取值的解析二义性",
+                binding.name
+            ));
+        }
+
         // 声明类型
         let declared_ty = binding.ty.as_ref().map(from_node);
 
@@ -565,17 +592,23 @@ impl Analyzer {
         match value {
             Some(expr) => {
                 let v = self.gen_expr(expr);
-                if matches!(expected, Type::Unit) {
-                    self.error("函数无返回类型，return 不能带表达式（规则 1.5）".to_string());
-                } else if !expected.compatible(&v.ty)
-                    && v.ty.is_known()
-                    && expected.is_known()
-                {
-                    self.error(format!(
-                        "return 表达式类型 {} 与函数声明返回类型 {} 不一致（规则 1.5）",
-                        v.ty.display(),
-                        expected.display()
-                    ));
+                // 统一用兼容性检查：`return ();` 在 Unit 函数中合法（`()` 与 `{}` 也是 Unit）；
+                // `return 1;` 在 Unit 函数中报"类型不一致"。
+                // （R3-2：之前一遇到 `Some(expr)` 且 expected 是 Unit 就硬性短路报错，
+                //  把 `fn main(){ return (); }` 这种合法代码也拒绝了。）
+                if !expected.compatible(&v.ty) && v.ty.is_known() && expected.is_known() {
+                    if matches!(expected, Type::Unit) {
+                        self.error(format!(
+                            "函数无返回类型，return 不能带表达式（实际类型 {}，规则 1.5）",
+                            v.ty.display()
+                        ));
+                    } else {
+                        self.error(format!(
+                            "return 表达式类型 {} 与函数声明返回类型 {} 不一致（规则 1.5）",
+                            v.ty.display(),
+                            expected.display()
+                        ));
+                    }
                 }
                 self.ir.emit("RETURN", v.place, PLACEHOLDER, PLACEHOLDER);
             }
@@ -605,6 +638,7 @@ impl Analyzer {
             ctx.loop_labels.push(LoopLabels {
                 start: label_start.clone(),
                 end: label_end.clone(),
+                loop_expr_index: None,
             });
         }
         self.gen_block_stmt(body);
@@ -721,6 +755,7 @@ impl Analyzer {
             ctx.loop_labels.push(LoopLabels {
                 start: label_cont.clone(),
                 end: label_end.clone(),
+                loop_expr_index: None,
             });
         }
         self.gen_block_stmt(body);
@@ -748,44 +783,96 @@ impl Analyzer {
         if !in_loop {
             self.error("`break` 必须位于循环体内（规则 5.4）".to_string());
         }
-        let v = value.map(|e| self.gen_expr(e));
-        let arg = if let Some(v) = v {
-            let mut result_place = None;
-            let mut type_error = None;
-            if let Some(ctx) = self.func_ctx.as_mut().and_then(|ctx| ctx.loop_exprs.last_mut()) {
-                match &ctx.break_type {
-                    Some(ty) if ty.is_known() && v.ty.is_known() && !ty.compatible(&v.ty) => {
-                        type_error = Some((ty.clone(), v.ty.clone()));
-                    }
-                    None => ctx.break_type = Some(v.ty.clone()),
-                    _ => {}
-                }
-                result_place = Some(ctx.result_place.clone());
-            }
-            let has_type_error = type_error.is_some();
-            if let Some((expected, actual)) = type_error {
-                self.error(format!(
-                    "loop 表达式多个 break 类型不一致：{} vs {}（规则 7.4）",
-                    expected.display(),
-                    actual.display()
-                ));
-            }
-            // 类型不一致时不再发射 = 赋值 IR，避免错误结果污染 loop 结果临时变量。
-            if !has_type_error {
-                if let Some(result_place) = result_place {
-                    self.ir.emit("=", v.place.clone(), PLACEHOLDER, result_place);
-                }
-            }
-            v.place
-        } else {
-            PLACEHOLDER.to_string()
-        };
-        let end_label = self
+
+        // 先在不可变借用下取出当前栈顶 LoopLabels 的 end / loop_expr_index，
+        // 再独立求值 break 表达式（求值期间会再次借用 self），最后写入。
+        // 这样确保 `loop_labels.last()` 与 `loop_exprs[idx]` 指向同一循环结构，
+        // 修复 R3-1（嵌套 for-in-loop 时 break-value 窜入外层 loop 的 result_place）。
+        let (end_label, loop_expr_index) = self
             .func_ctx
             .as_ref()
             .and_then(|c| c.loop_labels.last())
-            .map(|l| l.end.clone())
-            .unwrap_or_else(|| PLACEHOLDER.to_string());
+            .map(|l| (l.end.clone(), l.loop_expr_index))
+            .unwrap_or_else(|| (PLACEHOLDER.to_string(), None));
+
+        let v = value.map(|e| self.gen_expr(e));
+
+        // 区分 4 种情形：
+        //   (1) 无值 break  在 loop {} 内   → 把 break_type 视为 Unit 参与一致性检查
+        //   (2) 无值 break  在 for/while 内 → 正常 break，不影响 loop 表达式类型推断
+        //   (3) 带值 break  在 loop {} 内   → 写 result_place 并参与类型推断
+        //   (4) 带值 break  在 for/while 内 → 报错：`break <expr>` 仅 loop 支持
+        let arg = match (&v, loop_expr_index) {
+            // (3) loop {} 带值 break
+            (Some(v), Some(idx)) => {
+                let mut type_error: Option<(Type, Type)> = None;
+                if let Some(ctx) =
+                    self.func_ctx.as_mut().and_then(|fc| fc.loop_exprs.get_mut(idx))
+                {
+                    match &ctx.break_type {
+                        Some(ty) if ty.is_known() && v.ty.is_known() && !ty.compatible(&v.ty) => {
+                            type_error = Some((ty.clone(), v.ty.clone()));
+                        }
+                        None => ctx.break_type = Some(v.ty.clone()),
+                        _ => {}
+                    }
+                }
+                let result_place = self
+                    .func_ctx
+                    .as_ref()
+                    .and_then(|fc| fc.loop_exprs.get(idx))
+                    .map(|c| c.result_place.clone());
+                let has_type_error = type_error.is_some();
+                if let Some((expected, actual)) = type_error {
+                    self.error(format!(
+                        "loop 表达式多个 break 类型不一致：{} vs {}（规则 7.4）",
+                        expected.display(),
+                        actual.display()
+                    ));
+                }
+                if !has_type_error {
+                    if let Some(rp) = result_place {
+                        self.ir.emit("=", v.place.clone(), PLACEHOLDER, rp);
+                    }
+                }
+                v.place.clone()
+            }
+            // (4) for/while 内 `break <expr>;` —— PDF 仅允许在 loop 表达式内
+            (Some(v), None) => {
+                if in_loop {
+                    self.error(
+                        "`break <expr>;` 仅在 `loop` 表达式中允许（规则 7.4）".to_string(),
+                    );
+                }
+                v.place.clone()
+            }
+            // (1) loop {} 内无值 break —— 将 break_type 视为 Unit，与之前的带值 break 比较
+            (None, Some(idx)) => {
+                let mut type_error: Option<(Type, Type)> = None;
+                if let Some(ctx) =
+                    self.func_ctx.as_mut().and_then(|fc| fc.loop_exprs.get_mut(idx))
+                {
+                    match &ctx.break_type {
+                        Some(ty) if ty.is_known() && !ty.compatible(&Type::Unit) => {
+                            type_error = Some((ty.clone(), Type::Unit));
+                        }
+                        None => ctx.break_type = Some(Type::Unit),
+                        _ => {}
+                    }
+                }
+                if let Some((expected, actual)) = type_error {
+                    self.error(format!(
+                        "loop 表达式多个 break 类型不一致：{} vs {}（规则 7.4）",
+                        expected.display(),
+                        actual.display()
+                    ));
+                }
+                PLACEHOLDER.to_string()
+            }
+            // (2) for/while 内无值 break —— 正常跳出
+            (None, None) => PLACEHOLDER.to_string(),
+        };
+
         self.ir.emit("BREAK", arg, PLACEHOLDER, end_label);
     }
 
@@ -1313,9 +1400,11 @@ impl Analyzer {
                 result_place: result_place.clone(),
                 break_type: None,
             });
+            let idx = ctx.loop_exprs.len() - 1;
             ctx.loop_labels.push(LoopLabels {
                 start: label_start.clone(),
                 end: label_end.clone(),
+                loop_expr_index: Some(idx),
             });
         }
         self.gen_block_stmt(body);
