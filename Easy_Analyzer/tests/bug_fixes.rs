@@ -796,6 +796,28 @@ fn bug_r4n_then_only_if_unit_tail_ok() {
 }
 
 #[test]
+fn bug_r8_neg_i32_min_literal_accepted() {
+    // R8-1：-2147483648 (i32::MIN) 合法；不应被 R4-1 误判溢出
+    let r = run("fn main(){ let x:i32 = -2147483648; }");
+    assert!(
+        r.semantic_errors.is_empty(),
+        "i32::MIN 字面量应合法：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
+fn bug_r8_neg_i32_min_minus_one_rejected() {
+    // R8-1 边界：-2147483649 仍应报溢出
+    let r = run("fn main(){ let x:i32 = -2147483649; }");
+    assert!(
+        r.semantic_errors.iter().any(|e| e.message.contains("超出 i32 范围")),
+        "-2147483649 应报溢出：{:?}",
+        r.semantic_errors
+    );
+}
+
+#[test]
 fn bug_r6_call_variable_says_not_a_function() {
     // 把变量当函数调用，应说"不是函数"，而不是"未声明"
     let r = run("fn main(){ let a:i32 = 1; a(); }");

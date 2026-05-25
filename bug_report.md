@@ -570,3 +570,24 @@
 回归结果：与第六轮相同；无新增 warning。
 
 **累积统计**：7 轮共修复 **29 条真 BUG**（#1-#16、R-1~R-6、R3-1~R3-7、R4-1、R5-1/2/4/7/9、R6-1），归档 **16 条设计偏差**（D-1~D-16）。第七轮符合"直到查不出来问题为止"的停止条件。
+
+---
+
+# 第八轮：R8-1（已修复）
+
+第八轮用"反向方法"复审（从 PDF 规则反推 / 测试反推 / git log 反推 / panic 物理扫描），抓出 1 条真 BUG。
+
+### BUG R8-1 `-2147483648`（i32::MIN）字面量被 R4-1 误判为溢出 ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs::gen_unary`（Neg 分支）
+- **现象**：`fn main(){ let x:i32 = -2147483648; }` 报 `整数字面量 \`2147483648\` 超出 i32 范围（规则 0.1）`，但 i32::MIN 是合法值。
+- **根因**：lexer 把 `-2147483648` 拆成 `UnaryNeg + Number("2147483648")`，第四轮 R4-1 的范围检查在 `gen_expr(Expr::Number)` 独立运行，未考虑外层 unary neg 的上下文；`2147483648` 超 `i32::MAX`（2147483647）触发误判。
+- **修法**：在 `gen_unary` 的 Neg 分支中，若 inner 是 `Expr::Number`，按合成后的负值 `format!("-{}", value).parse::<i32>()` 做范围校验，绕过 `gen_expr(Expr::Number)` 的独立检查。`-2147483649` 仍正确报溢出。
+- **回归测试**：`tests/bug_fixes.rs::bug_r8_neg_i32_min_literal_accepted` + `bug_r8_neg_i32_min_minus_one_rejected`。
+
+## 第八轮影响面
+
+修改文件：`Easy_Analyzer/src/semantic.rs`、`Easy_Analyzer/tests/bug_fixes.rs`。
+回归结果：除 `cand_kk_range_value_stored_and_iterated`（parser 限制）外全部通过；无新增 warning。
+
+**累积统计（8 轮）**：共修复 **30 条真 BUG**，归档 16 条设计偏差。第八轮真正达到"无新真 BUG"停止条件，建议归档收官。

@@ -1172,7 +1172,21 @@ impl Analyzer {
     }
 
     fn gen_unary(&mut self, op: UnaryOp, inner: &Expr) -> ExprValue {
-        let v = self.gen_expr(inner);
+        // R8-1: -2147483648 (i32::MIN) 的正部分 2147483648 超出 i32::MAX，
+        // 直接走 gen_expr(Expr::Number) 会被 R4-1 误判溢出。这里在 Neg 分支
+        // 拦截 Expr::Number，按合成后的值校验 i32 范围。
+        let v = match (op, inner) {
+            (UnaryOp::Neg, Expr::Number { value }) => {
+                if format!("-{}", value).parse::<i32>().is_err() {
+                    self.error(format!(
+                        "整数字面量 `-{}` 超出 i32 范围（规则 0.1）",
+                        value
+                    ));
+                }
+                ExprValue::new(Type::I32, value.clone())
+            }
+            _ => self.gen_expr(inner),
+        };
         match op {
             UnaryOp::Neg => {
                 if v.ty.is_known() && !v.ty.is_integer() {
