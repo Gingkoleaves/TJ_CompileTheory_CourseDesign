@@ -86,6 +86,7 @@ fn extended_valid_program_generates_ir() {
             let b=loop { break pair.0; };
             return b;
         }
+        fn main(){}
         "#,
     );
 }

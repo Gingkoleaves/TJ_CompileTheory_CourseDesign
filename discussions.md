@@ -1,5 +1,10 @@
 # 设计讨论事项
 
+> **2026-05-25 更新**：本文档原本收纳 16 条"非明确缺陷、但与 Rust 严格语义有偏差"
+> 的设计取舍（D-1 ~ D-16）。**这些项已全部按"对齐 Rust 严格语义 / 实现严谨化"
+> 落地**——具体修改点在每条小节末以"**已实现**"形式标注。文档保留原始背景说明，
+> 仅作为答辩与历史追溯参考。
+
 本文档专门收纳"非明确缺陷、但与 Rust 严格语义有偏差"或"PDF 未要求但值得展开"的设计取舍。每条都没到必须立即修复的程度，但答辩、代码评审、未来扩展时可能被问到——先把背景、当前取舍、参考做法和决策点写清楚。
 
 ---
@@ -629,6 +634,27 @@ rustc 也是递归下降，但 release build 栈帧小、栈大；并显式做 m
 - 若未来要把本实现做成对外服务（用户提交任意 .rs 文件），需要把这条作为"DoS 防护"里程碑落地。
 
 ---
+
+## 已实现总览（2026-05-25）
+
+| 编号 | 主题 | 主要落点 |
+| --- | --- | --- |
+| D-1 | `if`/`while` 条件仅接受 `bool` | `semantic.rs::check_condition_type` |
+| D-2 | Never 类型推断（`return` 块 / 无 break-value 的 `loop`） | `semantic.rs::gen_block_expr` / `gen_if_expr` / `gen_loop_expr` |
+| D-3 | 显式 `return` 后不发兜底 `RETURN` | `semantic.rs::analyze_function` 末尾分支 |
+| D-4 | 静态越界后不发 `INDEX` / `[]=` | `semantic.rs::gen_index` / `gen_assign` 的 Index 分支 |
+| D-5 | 允许 `let x = ();`（仅函数调用产生的 Unit 报错） | `semantic.rs::gen_let` / `gen_assign` 的 Identifier 分支 |
+| D-6 | 常量算术表达式参与静态越界检查 | `semantic.rs::eval_const_i128` + `check_array_static_oob` |
+| D-7 | 源头堵截 `Type::Function` 绑定 | `semantic.rs::gen_let` 的 `(None, Type::Function)` 子分支 |
+| D-8 | 强制 `main` 函数存在、签名合法 | `semantic.rs::analyze_program` 尾扫描 |
+| D-9 | 条件类型不合法时不发 `IF_FALSE` / 不展开 `if` 标签 | `semantic.rs::gen_if_expr` / `gen_while` |
+| D-10 | Lexer 列号按字符计（跳 UTF-8 续字节） | `Easy_Lexer/src/lib.rs::advance` |
+| D-11 | Parser 拒绝链式比较（`a<b<c`） | `Easy_Parser/src/lib.rs::parse_expression` |
+| D-12 | 拦截 `return &local` / `&{tail = &local}` | `semantic.rs::gen_return` + `analyze_function` tail |
+| D-13 | Parser 容忍参数列表尾随逗号 | `Easy_Parser/src/lib.rs::parse_parameter_list` |
+| D-14 | `&mut T` ↔ `&T` 视为兼容（mut→shared 协变） | `Easy_Analyzer/src/types.rs::compatible` 的 `Ref` 分支 |
+| D-15 | `ARRAY` / `TUPLE` 拆为聚合声明 + N 条 `[]=` / `.=` | `semantic.rs::gen_array` / `gen_tuple` |
+| D-16 | Parser / Analyzer 递归 depth guard（256 层） | `Easy_Parser/src/lib.rs::enter/leave`、`semantic.rs::depth_enter` |
 
 ## 写在最后
 

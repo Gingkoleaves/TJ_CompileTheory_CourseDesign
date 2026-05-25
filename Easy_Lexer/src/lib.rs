@@ -364,7 +364,8 @@ impl<'a> Lexer<'a> {
         if byte == b'\n' {
             self.line += 1;
             self.column = 1;
-        } else {
+        } else if byte & 0b1100_0000 != 0b1000_0000 {
+            // D-10：按字符计列号——跳过 UTF-8 续字节（10xxxxxx）。
             self.column += 1;
         }
         Some(byte)

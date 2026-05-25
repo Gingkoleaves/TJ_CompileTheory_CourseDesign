@@ -405,7 +405,7 @@ fn cand_k_borrow_scope_drop_on_block_exit() {
 // ============================================================
 #[test]
 fn cand_l_if_branches_mixed_unit_value() {
-    let r = run("fn main(){ let x:i32 = if 1 { 1 } else { }; }");
+    let r = run("fn main(){ let x:i32 = if 1==1 { 1 } else { }; }");
     // 期望：报 if 表达式分支类型不一致（i32 vs ()）
     let mismatch = r
         .semantic_errors

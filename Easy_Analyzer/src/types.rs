@@ -59,8 +59,10 @@ impl Type {
         match (self, other) {
             (Type::Error, _) | (_, Type::Error) => true,
             (Type::Never, _) | (_, Type::Never) => true,
-            (Type::Ref { mutable: m1, inner: i1 }, Type::Ref { mutable: m2, inner: i2 }) => {
-                m1 == m2 && i1.compatible(i2)
+            (Type::Ref { mutable: _, inner: i1 }, Type::Ref { mutable: _, inner: i2 }) => {
+                // D-14：允许 &mut T 与 &T 视为兼容（涵盖 Rust 的 mut→shared 协变）。
+                // 简化版：mut 差异由独立的可变性检查兜底（赋值 / 解引用写时需要 &mut）。
+                i1.compatible(i2)
             }
             (
                 Type::Array { element: e1, length: l1 },

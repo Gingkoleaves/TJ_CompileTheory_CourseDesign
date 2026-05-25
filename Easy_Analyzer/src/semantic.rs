@@ -79,7 +79,11 @@ pub struct Analyzer {
     errors: Vec<SemanticError>,
     func_ctx: Option<FuncCtx>,
     borrow_scopes: Vec<HashMap<String, BorrowState>>,
+    depth: usize,
+    depth_overflow_reported: bool,
 }
+
+const MAX_ANALYZE_DEPTH: usize = 256;
 
 impl Analyzer {
     pub fn new() -> Self {
@@ -89,7 +93,28 @@ impl Analyzer {
             errors: Vec::new(),
             func_ctx: None,
             borrow_scopes: vec![HashMap::new()],
+            depth: 0,
+            depth_overflow_reported: false,
         }
+    }
+
+    fn depth_enter(&mut self) -> bool {
+        self.depth += 1;
+        if self.depth > MAX_ANALYZE_DEPTH {
+            if !self.depth_overflow_reported {
+                self.error(format!(
+                    "嵌套层级超过上限 {}（D-16）",
+                    MAX_ANALYZE_DEPTH
+                ));
+                self.depth_overflow_reported = true;
+            }
+            return false;
+        }
+        true
+    }
+
+    fn depth_leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     pub fn finish(self) -> (Vec<SemanticError>, Vec<Quadruple>) {
@@ -170,6 +195,23 @@ impl Analyzer {
                 continue;
             }
             self.analyze_function(f);
+        }
+
+        // D-8：要求存在 main 函数（参数为空，返回 Unit 或 i32）。
+        let main_sig = self.table.lookup_function("main").cloned();
+        match main_sig {
+            None => self.error("缺少 main 函数：程序必须存在 `fn main()` 入口".to_string()),
+            Some(sig) => {
+                if !sig.params.is_empty() {
+                    self.error("main 函数不能有参数".to_string());
+                }
+                if !matches!(sig.return_type, Type::Unit | Type::I32 | Type::Error) {
+                    self.error(format!(
+                        "main 函数返回类型必须为 () 或 i32，实际为 {}",
+                        sig.return_type.display()
+                    ));
+                }
+            }
         }
     }
 
@@ -269,6 +311,17 @@ impl Analyzer {
         }
         // 末尾表达式（rule 7.2）：等价 return
         if let Some(tail) = &f.body.tail {
+            // D-12：与显式 return 同源的局部引用拦截。
+            if let Expr::Unary { op: UnaryOp::Ref | UnaryOp::RefMut, expr: inner } = tail.as_ref() {
+                if let Expr::Identifier { name } = inner.as_ref() {
+                    if self.table.lookup(name).is_some() {
+                        self.error(format!(
+                            "返回局部变量 `{}` 的引用：变量在函数返回后即销毁（D-12）",
+                            name
+                        ));
+                    }
+                }
+            }
             let v = self.gen_expr(tail);
             if !v.ty.compatible(&return_type) && v.ty.is_known() && return_type.is_known() {
                 self.error(format!(
@@ -285,19 +338,20 @@ impl Analyzer {
             // 说明存在 fall-through 路径而无返回值。这里做最朴素的"末尾静态检查"
             // （非完整控制流分析）：仅当 body.statements 末尾不是 Statement::Return
             // 时报错，避免漏掉 `fn main()->i32 { let a:i32 = 1; }` 这种情况。
-            if !matches!(return_type, Type::Unit) {
-                let last_is_return =
-                    matches!(f.body.statements.last(), Some(Statement::Return { .. }));
-                if !last_is_return {
-                    self.error(format!(
-                        "函数 `{}` 声明返回类型 {}，但函数体无 return 或尾表达式（规则 1.5）",
-                        f.name,
-                        return_type.display()
-                    ));
-                }
+            let last_is_return =
+                matches!(f.body.statements.last(), Some(Statement::Return { .. }));
+            if !matches!(return_type, Type::Unit) && !last_is_return {
+                self.error(format!(
+                    "函数 `{}` 声明返回类型 {}，但函数体无 return 或尾表达式（规则 1.5）",
+                    f.name,
+                    return_type.display()
+                ));
             }
-            self.ir
-                .emit("RETURN", PLACEHOLDER, PLACEHOLDER, PLACEHOLDER);
+            // D-3：仅当末尾不是显式 return 时才发射兜底 RETURN，避免不可达 IR。
+            if !last_is_return {
+                self.ir
+                    .emit("RETURN", PLACEHOLDER, PLACEHOLDER, PLACEHOLDER);
+            }
         }
 
         self.check_current_scope_uninferred();
@@ -374,11 +428,19 @@ impl Analyzer {
                     decl.clone()
                 }
                 (None, expr_ty) => {
-                    // 类型推断（rule 2.3）
-                    if matches!(expr_ty, Type::Unit) {
+                    // 类型推断（rule 2.3）。D-5：仅当 Unit 来源于函数调用时报错，
+                    // 允许 `let x = ();` / `let x = {};` 这类合法的 Unit 字面量。
+                    if matches!(expr_ty, Type::Unit) && matches!(init, Some(Expr::Call { .. })) {
                         self.error(format!(
                             "无法用 `()` 初始化变量 `{}`：函数无返回值不可作为表达式（规则 3.5）",
                             binding.name
+                        ));
+                        Type::Error
+                    } else if matches!(expr_ty, Type::Function) {
+                        // D-7：禁止把函数项绑定到变量（无函数指针 / 函数项类型）。
+                        self.error(format!(
+                            "不能把函数 `{}` 作值绑定（应加 `()` 调用）（规则 3.5）",
+                            v.place
                         ));
                         Type::Error
                     } else {
@@ -440,8 +502,9 @@ impl Analyzer {
                     }
                     cur_ty
                 } else {
-                    // 之前类型未知，本次赋值确定类型
-                    if matches!(value_val.ty, Type::Unit) {
+                    // 之前类型未知，本次赋值确定类型。
+                    // D-5：仅当 Unit 来源于函数调用时报错。
+                    if matches!(value_val.ty, Type::Unit) && matches!(value, Expr::Call { .. }) {
                         self.error(format!(
                             "无法用 `()` 初始化变量 `{}`：函数无返回值不可作为表达式",
                             name
@@ -514,9 +577,10 @@ impl Analyzer {
                         idx_v.ty.display()
                     ));
                 }
+                let mut oob = false;
                 let elem_ty = match &base_v.ty {
                     Type::Array { element, length } => {
-                        self.check_array_static_oob(base, index, *length);
+                        oob = self.check_array_static_oob(base, index, *length);
                         (**element).clone()
                     }
                     Type::Error => Type::Error,
@@ -539,10 +603,13 @@ impl Analyzer {
                         value_val.ty.display()
                     ));
                 }
-                self.ir
-                    .emit("[]=", value_val.place, idx_v.place, base_v.place.clone());
-                if is_place_chain(base) {
-                    self.write_back_to_parent(base, base_v.place);
+                // D-4：静态越界后不发射写下标 IR。
+                if !oob {
+                    self.ir
+                        .emit("[]=", value_val.place, idx_v.place, base_v.place.clone());
+                    if is_place_chain(base) {
+                        self.write_back_to_parent(base, base_v.place);
+                    }
                 }
             }
             Expr::Field { base, field } => {
@@ -661,11 +728,19 @@ impl Analyzer {
 
         match value {
             Some(expr) => {
+                // D-12：拦截"返回局部引用"——朴素版只识别 `return &x;` / `return &mut x;`
+                // 这两种直接形式（x 必须是当前函数本地的标识符，非 ref 类型参数透传）。
+                if let Expr::Unary { op: UnaryOp::Ref | UnaryOp::RefMut, expr: inner } = expr {
+                    if let Expr::Identifier { name } = inner.as_ref() {
+                        if self.table.lookup(name).is_some() {
+                            self.error(format!(
+                                "返回局部变量 `{}` 的引用：变量在函数返回后即销毁（D-12）",
+                                name
+                            ));
+                        }
+                    }
+                }
                 let v = self.gen_expr(expr);
-                // 统一用兼容性检查：`return ();` 在 Unit 函数中合法（`()` 与 `{}` 也是 Unit）；
-                // `return 1;` 在 Unit 函数中报"类型不一致"。
-                // （R3-2：之前一遇到 `Some(expr)` 且 expected 是 Unit 就硬性短路报错，
-                //  把 `fn main(){ return (); }` 这种合法代码也拒绝了。）
                 if !expected.compatible(&v.ty) && v.ty.is_known() && expected.is_known() {
                     if matches!(expected, Type::Unit) {
                         self.error(format!(
@@ -701,7 +776,13 @@ impl Analyzer {
         self.ir.emit_label(&label_start);
         let cond = self.gen_expr(condition);
         self.check_condition_type(&cond.ty, "while");
-        self.ir.emit_if_false(&cond.place, &label_end);
+        // D-9：条件类型不合法时仍生成循环骨架以保持 IR 完整，但不发 IF_FALSE
+        // 以避免占位符 cond 槽位。下游解释器将解读为"循环已死"（缺出口），
+        // 但语义阶段诊断已经报告。
+        let cond_ok = matches!(cond.ty, Type::Bool) || !cond.ty.is_known();
+        if cond_ok {
+            self.ir.emit_if_false(&cond.place, &label_end);
+        }
 
         if let Some(ctx) = self.func_ctx.as_mut() {
             ctx.loop_depth += 1;
@@ -1070,7 +1151,8 @@ impl Analyzer {
     /// 数组下标静态越界检查（被 gen_index 与 indexed-assign 共用）。
     /// 仅识别 `Expr::Number` 与 `Expr::Unary{Neg, Number}` 字面量形态；
     /// 解析失败（过大）一律视为越界。
-    fn check_array_static_oob(&mut self, base: &Expr, index: &Expr, len: usize) {
+    /// 返回 true 表示静态越界已被检测并报错（供 D-4 调用者决定是否跳过 INDEX 发射）。
+    fn check_array_static_oob(&mut self, base: &Expr, index: &Expr, len: usize) -> bool {
         let oob: Option<(bool, String)> = match index {
             Expr::Number { value } => match value.parse::<u128>() {
                 Ok(n) => Some((n >= len as u128, value.clone())),
@@ -1083,7 +1165,11 @@ impl Analyzer {
                     None
                 }
             }
-            _ => None,
+            // D-6：尝试对常量算术表达式做编译期求值。
+            _ => eval_const_i128(index).map(|n| {
+                let shown = n.to_string();
+                (n < 0 || (n as u128) >= len as u128, shown)
+            }),
         };
         if let Some((true, shown)) = oob {
             let name = root_identifier(base)
@@ -1093,16 +1179,19 @@ impl Analyzer {
                 "{}下标 {} 越界，合法范围 [0,{})（规则 8.3）",
                 name, shown, len
             ));
+            return true;
         }
+        false
     }
 
     fn check_condition_type(&mut self, ty: &Type, ctx: &str) {
         if !ty.is_known() {
             return;
         }
-        if !matches!(ty, Type::Bool | Type::I32) {
+        // D-1：对齐 Rust 严格语义，条件仅接受 bool。
+        if !matches!(ty, Type::Bool) {
             self.error(format!(
-                "{} 条件表达式类型 {} 不可作为条件",
+                "{} 条件表达式类型 {} 不可作为条件（需要 bool）",
                 ctx,
                 ty.display()
             ));
@@ -1114,6 +1203,16 @@ impl Analyzer {
     // ------------------------------------------------------------------
 
     fn gen_expr(&mut self, expr: &Expr) -> ExprValue {
+        if !self.depth_enter() {
+            self.depth_leave();
+            return ExprValue::error();
+        }
+        let r = self.gen_expr_inner(expr);
+        self.depth_leave();
+        r
+    }
+
+    fn gen_expr_inner(&mut self, expr: &Expr) -> ExprValue {
         match expr {
             Expr::Number { value } => {
                 if value.parse::<i32>().is_err() {
@@ -1414,11 +1513,16 @@ impl Analyzer {
         };
         // 静态越界检查：支持正字面量、负字面量（Unary{Neg, Number}）、
         // 以及超出 u128 的极大正字面量（解析失败一律视为越界）。
-        if let Some(len) = len {
-            self.check_array_static_oob(base, index, len);
-        }
+        let oob = if let Some(len) = len {
+            self.check_array_static_oob(base, index, len)
+        } else {
+            false
+        };
+        // D-4：静态越界后不发射 INDEX，避免假设性的"越界访问"留在 IR 中。
         let t = self.ir.new_temp();
-        self.ir.emit("INDEX", b.place, i.place, &t);
+        if !oob {
+            self.ir.emit("INDEX", b.place, i.place, &t);
+        }
         ExprValue::new(elem_ty, t)
     }
 
@@ -1488,12 +1592,16 @@ impl Analyzer {
             length: elements.len(),
         };
         let t = self.ir.new_temp();
+        // D-15：拆为严格四元式形式——先 ARRAY 声明，再逐元素 `[]=`。
         self.ir.emit(
             "ARRAY",
-            places.join(","),
+            PLACEHOLDER.to_string(),
             elements.len().to_string(),
             &t,
         );
+        for (i, p) in places.into_iter().enumerate() {
+            self.ir.emit("[]=", p, i.to_string(), &t);
+        }
         ExprValue::new(inferred, t)
     }
 
@@ -1511,12 +1619,16 @@ impl Analyzer {
             Type::Tuple { elements: tys }
         };
         let t = self.ir.new_temp();
+        // D-15：拆为严格四元式形式——先 TUPLE 声明，再逐字段 `.=`。
         self.ir.emit(
             "TUPLE",
-            places.join(","),
+            PLACEHOLDER.to_string(),
             elements.len().to_string(),
             &t,
         );
+        for (i, p) in places.into_iter().enumerate() {
+            self.ir.emit(".=", p, i.to_string(), &t);
+        }
         ExprValue::new(ty, t)
     }
 
@@ -1527,6 +1639,12 @@ impl Analyzer {
         }
         let result = if let Some(tail) = &block.tail {
             self.gen_expr(tail)
+        } else if matches!(
+            block.statements.last(),
+            Some(Statement::Return { .. } | Statement::Break { .. } | Statement::Continue)
+        ) {
+            // D-2：块体以发散语句结束（return / break / continue），整体类型为 Never。
+            ExprValue::new(Type::Never, PLACEHOLDER.to_string())
         } else {
             ExprValue::new(Type::Unit, PLACEHOLDER.to_string())
         };
@@ -1544,6 +1662,23 @@ impl Analyzer {
         let cond = self.gen_expr(condition);
         self.check_condition_type(&cond.ty, "if");
 
+        // D-9：条件类型不合法时，跳过 IF_FALSE / LABEL 的发射；
+        // 仍递归分析两分支以保持错误恢复，但整体 if 置为 Error。
+        let cond_ok = matches!(cond.ty, Type::Bool) || !cond.ty.is_known();
+        if !cond_ok {
+            let _ = self.gen_block_expr(then_branch);
+            match else_branch {
+                ElseBranch::Block { block } => {
+                    let _ = self.gen_block_expr(block);
+                }
+                ElseBranch::ElseIf { expr } => {
+                    let _ = self.gen_expr(expr);
+                }
+                ElseBranch::None => {}
+            }
+            return ExprValue::new(Type::Error, PLACEHOLDER.to_string());
+        }
+
         let label_else = self.ir.new_label();
         let label_end = self.ir.new_label();
         let has_else = !matches!(else_branch, ElseBranch::None);
@@ -1556,18 +1691,17 @@ impl Analyzer {
         let mut result_temp: Option<String> = None;
         let mut result_ty = then_val.ty.clone();
         // 修复 BUG 5：无 else 的 if 表达式没有"条件为假"路径来提供值，整体必须是 ()。
-        // 若 then-tail 求出非 Unit 值，报错并强制结果类型为 Unit，
-        // 防止 `let x:i32 = if cond { 1 };` 被悄悄放行。
+        // 若 then-tail 求出非 Unit 值（且非 Never），报错并强制结果类型为 Unit。
         if !has_else
             && then_val.ty.is_known()
-            && !matches!(then_val.ty, Type::Unit)
+            && !matches!(then_val.ty, Type::Unit | Type::Never)
         {
             self.error(format!(
                 "无 `else` 的 `if` 表达式尾值必须为 `()`，实际类型 {}",
                 then_val.ty.display()
             ));
             result_ty = Type::Unit;
-        } else if !matches!(then_val.ty, Type::Unit) {
+        } else if !matches!(then_val.ty, Type::Unit | Type::Never) {
             let t = self.ir.new_temp();
             self.ir.emit("=", then_val.place, PLACEHOLDER, &t);
             result_temp = Some(t);
@@ -1590,10 +1724,11 @@ impl Analyzer {
                     else_val.ty.display()
                 ));
             }
-            if matches!(result_ty, Type::Unit) {
+            // D-2：Never 视为单位元——分支推断时取非 Never 的一边。
+            if matches!(result_ty, Type::Unit | Type::Never) {
                 result_ty = else_val.ty.clone();
             }
-            if !matches!(else_val.ty, Type::Unit) {
+            if !matches!(else_val.ty, Type::Unit | Type::Never) {
                 let t = result_temp
                     .clone()
                     .unwrap_or_else(|| self.ir.new_temp());
@@ -1636,7 +1771,9 @@ impl Analyzer {
         // 配合 gen_break 把 end 写入 BREAK 四元式第四元，end 通过 BREAK 可达。
         self.ir.emit_goto(&label_start);
         self.ir.emit_label(&label_end);
-        ExprValue::new(break_type.unwrap_or(Type::Unit), result_place)
+        // D-2：loop 体内若没有 break-with-value，loop 表达式整体类型为 Never。
+        // 这允许 `let x:i32 = loop {};` 在类型推断中通过（与任意类型 unify）。
+        ExprValue::new(break_type.unwrap_or(Type::Never), result_place)
     }
 }
 
@@ -1650,6 +1787,29 @@ fn root_identifier(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Identifier { name } => Some(name),
         Expr::Index { base, .. } | Expr::Field { base, .. } => root_identifier(base),
+        _ => None,
+    }
+}
+
+/// D-6：对字面量 / Unary{Neg, ...} / 二元 Add/Sub/Mul/Div 做编译期求值。
+/// 任何含变量/调用/索引等 runtime 依赖的表达式都返回 None。
+fn eval_const_i128(expr: &Expr) -> Option<i128> {
+    match expr {
+        Expr::Number { value } => value.parse::<i128>().ok(),
+        Expr::Unary { op: UnaryOp::Neg, expr } => eval_const_i128(expr).and_then(|v| 0i128.checked_sub(v)),
+        Expr::Binary { left, op, right } => {
+            let l = eval_const_i128(left)?;
+            let r = eval_const_i128(right)?;
+            match op {
+                BinaryOp::Add => l.checked_add(r),
+                BinaryOp::Sub => l.checked_sub(r),
+                BinaryOp::Mul => l.checked_mul(r),
+                BinaryOp::Div => {
+                    if r == 0 { None } else { l.checked_div(r) }
+                }
+                _ => None,
+            }
+        }
         _ => None,
     }
 }

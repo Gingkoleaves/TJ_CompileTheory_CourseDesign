@@ -265,11 +265,29 @@ pub enum TypeNode {
 struct Parser<'a> {
     tokens: &'a [Token],
     current: usize,
+    depth: usize,
 }
+
+const MAX_PARSE_DEPTH: usize = 256;
 
 impl<'a> Parser<'a> {
     fn new(tokens: &'a [Token]) -> Self {
-        Self { tokens, current: 0 }
+        Self { tokens, current: 0, depth: 0 }
+    }
+
+    fn enter(&mut self) -> Result<(), ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            return Err(self.error_here(&format!(
+                "嵌套层级超过上限 {}（D-16）",
+                MAX_PARSE_DEPTH
+            )));
+        }
+        Ok(())
+    }
+
+    fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     fn parse_program(mut self) -> Result<Program, ParseError> {
@@ -325,6 +343,9 @@ impl<'a> Parser<'a> {
             params.push(binding);
 
             if !self.match_simple(SimpleTokenKind::Comma) {
+                break;
+            }
+            if self.check_simple(SimpleTokenKind::RParen) {
                 break;
             }
         }
@@ -395,6 +416,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_block(&mut self) -> Result<Block, ParseError> {
+        self.enter()?;
+        let r = self.parse_block_inner();
+        self.leave();
+        r
+    }
+
+    fn parse_block_inner(&mut self) -> Result<Block, ParseError> {
         self.expect_simple(SimpleTokenKind::LBrace, "expected `{` to start a block")?;
         let mut statements = Vec::new();
         let mut tail = None;
@@ -547,15 +575,25 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expression(&mut self) -> Result<Expr, ParseError> {
+        self.enter()?;
+        let r = self.parse_expression_inner();
+        self.leave();
+        r
+    }
+
+    fn parse_expression_inner(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.parse_additive()?;
 
-        while let Some(op) = self.match_comparison_op() {
+        if let Some(op) = self.match_comparison_op() {
             let right = self.parse_additive()?;
             expr = Expr::Binary {
                 left: Box::new(expr),
                 op,
                 right: Box::new(right),
             };
+            if self.match_comparison_op().is_some() {
+                return Err(self.error_here("比较运算符不能链式使用（如 a<b<c），请用 `&&` 显式连接"));
+            }
         }
 
         Ok(expr)
