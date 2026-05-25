@@ -1,12 +1,13 @@
 use axum::{
     extract::Json,
-    http::{header, StatusCode},
+    http::{header, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use tower_http::cors::{Any, CorsLayer};
 
 #[derive(Deserialize)]
 struct AnalyzeRequest {
@@ -21,6 +22,18 @@ struct AnalyzeResponse {
     lexer_errors: Vec<String>,
     #[serde(rename = "parseError")]
     parse_error: Option<String>,
+    #[serde(rename = "semanticErrors")]
+    semantic_errors: Vec<String>,
+    quadruples: Vec<QuadrupleView>,
+}
+
+#[derive(Serialize)]
+struct QuadrupleView {
+    index: usize,
+    op: String,
+    arg1: String,
+    arg2: String,
+    result: String,
 }
 
 #[derive(Serialize)]
@@ -30,6 +43,7 @@ struct TokenView {
     value: String,
     #[serde(rename = "type")]
     type_: String,
+    #[serde(rename = "typeEnum")]
     type_enum: String,
 }
 
@@ -64,16 +78,40 @@ async fn analyze(Json(req): Json<AnalyzeRequest>) -> Json<AnalyzeResponse> {
         })
         .collect();
 
-    let (ast, parse_error) = if lex_result.errors.is_empty() {
+    let (ast, parse_error, semantic_errors, quadruples) = if lex_result.errors.is_empty() {
         match easy_parser::parse_program_ast(&lex_result.tokens) {
-            Ok(program) => (
-                serde_json::to_value(program).ok(),
-                None,
-            ),
-            Err(error) => (None, Some(format!("{error}"))),
+            Ok(program) => {
+                let ast_json = serde_json::to_value(&program).ok();
+                let analysis = easy_analyzer::analyze(&program);
+                let sem_msgs: Vec<String> = analysis
+                    .semantic_errors
+                    .iter()
+                    .map(|e| format!("[语义错误] {}", e.message))
+                    .collect();
+                let quads: Vec<QuadrupleView> = analysis
+                    .quadruples
+                    .iter()
+                    .enumerate()
+                    .map(|(i, q)| QuadrupleView {
+                        index: i,
+                        op: q.op.clone(),
+                        arg1: q.arg1.clone(),
+                        arg2: q.arg2.clone(),
+                        result: q.result.clone(),
+                    })
+                    .collect();
+                (ast_json, None, sem_msgs, quads)
+            }
+            Err(error) => (None, Some(format!("{error}")), Vec::new(), Vec::new()),
         }
     } else {
-        (None, None)
+        // 词法阶段已失败：跳过 parser，但用 parse_error 告知前端原因，
+        // 避免出现"AST 不可用"却无解释。
+        let explain = format!(
+            "因 {} 个词法错误，已跳过语法与语义分析",
+            lex_result.errors.len()
+        );
+        (None, Some(explain), Vec::new(), Vec::new())
     };
 
     Json(AnalyzeResponse {
@@ -81,6 +119,8 @@ async fn analyze(Json(req): Json<AnalyzeRequest>) -> Json<AnalyzeResponse> {
         ast,
         lexer_errors,
         parse_error,
+        semantic_errors,
+        quadruples,
     })
 }
 
@@ -117,9 +157,16 @@ fn classify_token(kind: &easy_lexer::TokenKind) -> String {
 
 #[tokio::main]
 async fn main() {
+    // 允许任意源访问 /api/analyze，方便 file:// 双击 index.html 或自定义前端使用。
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers(Any);
+
     let app = Router::new()
         .route("/", get(serve_index))
-        .route("/api/analyze", post(analyze));
+        .route("/api/analyze", post(analyze))
+        .layer(cors);
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
     println!("Server running at http://{}", addr);

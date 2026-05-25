@@ -224,7 +224,7 @@
 
 <header>
   <h1>Rust-Like Compiler</h1>
-  <span class="subtitle">词法分析 &amp; 语法分析可视化</span>
+  <span class="subtitle">词法 / 语法 / 语义 / 中间代码 可视化</span>
   <button id="analyzeBtn" onclick="analyze()">分析 (Ctrl+Enter)</button>
 </header>
 
@@ -250,6 +250,7 @@
       <span>分析结果</span>
       <span class="tab active" data-tab="tokens" onclick="switchTab('tokens')">Token 表</span>
       <span class="tab" data-tab="ast" onclick="switchTab('ast')">AST 树</span>
+      <span class="tab" data-tab="quad" onclick="switchTab('quad')">四元式</span>
       <span class="tab" data-tab="errors" onclick="switchTab('errors')">错误</span>
     </div>
     <div class="panel-body">
@@ -258,6 +259,9 @@
       </div>
       <div id="tab-ast" class="tab-content">
         <div class="placeholder">点击"分析"按钮查看语法分析结果</div>
+      </div>
+      <div id="tab-quad" class="tab-content">
+        <div class="placeholder">点击"分析"按钮查看中间代码（四元式）</div>
       </div>
       <div id="tab-errors" class="tab-content">
         <div class="placeholder">暂无错误</div>
@@ -318,14 +322,19 @@ async function analyze() {
 
     renderTokens(data.tokens || []);
     renderAst(data.ast);
-    renderErrors(data.lexerErrors || [], data.parseError);
+    renderQuadruples(data.quadruples || []);
+    renderErrors(data.lexerErrors || [], data.parseError, data.semanticErrors || []);
 
     const tokCount = (data.tokens || []).length;
     const lexErrCount = (data.lexerErrors || []).length;
     const parseOk = !data.parseError;
+    const semErrCount = (data.semanticErrors || []).length;
+    const quadCount = (data.quadruples || []).length;
     let info = `Token: ${tokCount}`;
     if (lexErrCount) info += ` | 词法错误: ${lexErrCount}`;
     if (!parseOk) info += ` | 语法错误: 1`;
+    if (semErrCount) info += ` | 语义错误: ${semErrCount}`;
+    if (quadCount) info += ` | 四元式: ${quadCount}`;
     document.getElementById('resultInfo').textContent = info;
 
   } catch (e) {
@@ -452,10 +461,11 @@ function renderAstNode(node) {
 }
 
 // 错误渲染
-function renderErrors(lexerErrors, parseError) {
+function renderErrors(lexerErrors, parseError, semanticErrors) {
   const container = document.getElementById('tab-errors');
   const errors = [...lexerErrors];
   if (parseError) errors.push('[语法错误] ' + parseError);
+  for (const e of (semanticErrors || [])) errors.push(e);
 
   if (!errors.length) {
     container.innerHTML = '<div class="placeholder">暂无错误</div>';
@@ -464,6 +474,34 @@ function renderErrors(lexerErrors, parseError) {
   container.innerHTML = errors.map(e =>
     `<div class="error-box">${esc(e)}</div>`
   ).join('');
+}
+
+// 四元式渲染
+function renderQuadruples(quads) {
+  const container = document.getElementById('tab-quad');
+  if (!quads.length) {
+    container.innerHTML = '<div class="placeholder">无四元式（可能存在语法错误）</div>';
+    return;
+  }
+  let html = '<table class="token-table"><thead><tr>';
+  html += '<th>#</th><th>op</th><th>arg1</th><th>arg2</th><th>result</th>';
+  html += '</tr></thead><tbody>';
+  quads.forEach(q => {
+    const isLabel = q.op === 'LABEL';
+    const isCtrl = ['GOTO', 'IF_FALSE', 'FUNC', 'END_FUNC', 'RETURN', 'CALL', 'PARAM', 'PARAM_DECL', 'BREAK', 'CONTINUE'].includes(q.op);
+    let opCls = 'cat-op';
+    if (isLabel) opCls = 'cat-bound';
+    else if (isCtrl) opCls = 'cat-special';
+    html += `<tr>
+      <td>${q.index}</td>
+      <td><span class="token-cat ${opCls}">${esc(q.op)}</span></td>
+      <td>${esc(q.arg1)}</td>
+      <td>${esc(q.arg2)}</td>
+      <td>${esc(q.result)}</td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  container.innerHTML = html;
 }
 
 function esc(s) {

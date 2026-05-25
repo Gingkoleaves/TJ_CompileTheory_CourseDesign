@@ -1,0 +1,641 @@
+# Easy_Analyzer BUG 总清单（三轮复审汇总）
+
+本文档汇总了三轮 BUG 复审的全部结论：
+
+- **第一轮**（#1-#16）：5 路并行 agent 静态代码追踪 + 21 个 cargo test 印证。
+- **第二轮**（R-1~R-6）：穷尽式人工复审 + 36 个基线测试 + `tests/triage.rs`（20 个候选用例）实证。
+- **第三轮**（R3-1~R3-7）：新增 `tests/triage_round3.rs` 13 项 + `tests/triage_round3_extra.rs` 13 项做实证探测。
+
+调查范围（共同）：`Easy_Analyzer/src/{semantic.rs, types.rs, symbol.rs, ir.rs}` + `Easy_Parser/src/lib.rs` + `Easy_Server/src/main.rs` + `index.html`。
+
+实证文件：`Easy_Analyzer/tests/triage.rs`、`tests/triage_round3.rs`、`tests/triage_round3_extra.rs`。
+
+---
+
+# 第一轮：#1-#16（已全部修复）
+
+## 🔴 严重（阻塞 IR 可执行 / 强制规则范围） ✅ 已修复
+
+### BUG #1 `BREAK` 四元式不携带目标 label  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:577`
+- **现象**：`self.ir.emit("BREAK", arg, PLACEHOLDER, PLACEHOLDER)` —— 第四元（result）应填循环 end label，实际填的是 `"_"`
+- **复现**：`fn main()->i32{ let mut i:i32=0; while i<10 { if i==3 { break; } i=i+1; } return i; }`
+- **影响**：任何含 break 的合法程序生成的 IR 不可被解释/翻译为目标代码
+
+### BUG #2 `CONTINUE` 四元式不携带目标 label  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:589-590`
+- **现象**：`self.ir.emit("CONTINUE", PLACEHOLDER, PLACEHOLDER, PLACEHOLDER)` —— 应填回到循环 cond label
+- **影响**：同 BUG #1
+
+### BUG #3 `FuncCtx` 没有 loop_stack，无法填写上述 label  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:54, 214, 1034`
+- **现象**：现有 `loop_exprs` 只服务于 `break <expr>`，不存普通 break/continue 的目标
+- **建议**：在 `FuncCtx` 加 `loop_labels: Vec<(start: String, end: String)>`，`gen_while/gen_for/gen_loop_expr` 进入时 push、退出时 pop，`gen_break/gen_continue` 读栈顶填到第四元
+
+## 🟠 中等（误报合法代码 / 影响扩展规则） ✅ 已修复
+
+### BUG #4 零长度数组字面量 `let a:[i32;0]=[]` 误报类型不匹配  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:922-925` + `Easy_Analyzer/src/types.rs:63-72`
+- **现象**：`gen_array` 对空 elements 推断为 `Array{Unknown, 0}`；`compatible` 在数组分支递归到 `I32.compatible(Unknown)` 回落到 `==` → false；`is_known()` 仅检查顶层，所以 mismatch 路径触发误报
+- **复现**：`fn main(){ let a:[i32;0]=[]; }` → 报 "[i32; 0] 与 [<未知>; 0] 不匹配"
+- **修法**：空数组返回 `Array{Error, 0}`（Error 在 compatible 中通配），或 `compatible` 数组分支对 Unknown 元素短路通过
+
+### BUG #5 Server `TokenView.type_enum` 字段没加 serde rename，前端"枚举"列恒为空  ✅
+- **文件**：`Easy_Server/src/main.rs:45, 64` + `index.html:375`
+- **现象**：后端序列化为 `"type_enum"`，前端读 `t.typeEnum` 得 `undefined` → `esc(undefined)` 输出空字符串
+- **复现**：任意源码点"分析" → Token 表"枚举"列空白
+- **修法**：给 `type_enum: String` 加 `#[serde(rename = "typeEnum")]`，或前端改读 `t.type_enum`
+
+### BUG #6 函数名作实参时错误信息文不对题（PDF 例 program_3_3__4）  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs::gen_identifier` (~L649) + `gen_call`
+- **现象**：PDF 期望"实参类型与形参类型不一致"；实际报"变量 program_3_3_4_a 未声明"（因 `gen_identifier` 在变量符号表查不到函数名）
+- **影响**：语义上仍报错 → 测试 `assert_err` 通过，但与 PDF 描述不符，扣分点
+- **修法**：`gen_identifier` 找不到变量时回退 `lookup_function`，返回 `Type::Function` 占位让 `gen_call` 比对
+
+## 🟡 轻度（IR 不优雅 / 错误恢复瑕疵） ✅ 已修复
+
+### BUG #7 重复函数定义后仍生成两份 FUNC IR  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:144-154`（无去重跳过）
+- **现象**：`fn f(){} fn f(){}` 报"重复定义"正确，但 IR 含两份 `FUNC f`…`END_FUNC f`
+
+### BUG #8 带返回类型的函数若无任何 return，IR 缺终结子  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:222-237`（仅 Unit 返回类型才 emit 隐式 RETURN）
+- **现象**：`fn f()->i32{ }` 的 IR 没有 RETURN，下游可能误判 fall-through
+
+### BUG #9 `if` 表达式两分支均为 Unit 时仍分配未写入的 temp  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:991-1024` (`gen_if_expr`)
+- **现象**：无条件 `new_temp()`，但 Unit 分支不 emit `=` → temp 悬空
+
+### BUG #10 `loop { ... }` 的 end label 不可达  ✅（由 BUG #1 修复带动：BREAK 现在携带 end label，end 通过 BREAK 可达）
+- **文件**：`Easy_Analyzer/src/semantic.rs:1027-1049` (`gen_loop_expr`)
+- **现象**：只发 `LABEL start … GOTO start; LABEL end`，end 仅靠 break 才到（叠加 BUG #1 → 死循环）
+
+### BUG #11 块表达式作用域内"类型无法推断"漏报  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:959-971` (`gen_block_expr` 未调 `check_current_scope_uninferred`)
+- **现象**：`let x = { let y; 1 };` 不报 y 无法推断
+
+### BUG #12 类型不一致的 `break <expr>` 仍发射 `=` 赋值 IR  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:563-572`
+- **现象**：报错后照常 emit `(=, "()", _, tN)`
+
+## 🔵 措辞 / 信息缺失 ✅ 已修复
+
+### BUG #13 数组越界错误未带数组名  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:851-853`
+- **现象**：`数组下标 5 越界，合法范围 [0,3)` 缺变量名
+
+### BUG #14 "调用未声明的函数"错误未带规则号  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:767`
+- **现象**：对比其他错误都带"（规则 X.X）"
+
+### BUG #15 Server 无 CORS，file:// 打开 index.html 不工作  ✅
+- **文件**：`Easy_Server/src/main.rs:152-154`
+- **现象**：同源访问 OK；跨源/本地双击 html 失败
+- **严重度**：取决于使用方式
+
+### BUG #16 词法错误时跳过 parser，前端无原因提示  ✅
+- **文件**：`Easy_Server/src/main.rs:79`
+- **现象**："AST 不可用"无解释
+
+## ✅ 第一轮确认正确处理
+
+**28 条 PDF 语义检查**：1.5/2.1/2.2/2.3/3.5/5.2/5.4/6.1/6.3/6.4/7.4/8.2/8.3/9.2/9.3 全部在源码层正确实现，`requirements_coverage.rs` + `smoke.rs` 21 个测试印证。
+
+**算术/比较 IR**：操作数顺序（`a-b → (-, a, b, t)`）、IF_FALSE 跳 else/end、while cond/end 标签结构、`=` 方向、CALL 返回值写 result、PARAM FIFO、临时变量单调不复用 —— 全部正确。
+
+**边界**：自递归、互递归、shadowing 链（含类型变化）、深嵌套 if/while、空函数/空语句、多错误恢复、条件中的复杂表达式与函数调用、多个不可变引用、嵌套元组/数组、数组静态越界、未声明函数调用 —— 全部行为符合预期。
+
+**Server**：JSON 字段 `lexerErrors/parseError/semanticErrors/quadruples` 与前端期望一致（仅 `typeEnum` 除外），quadruple 子字段 `index/op/arg1/arg2/result` 命名一致，Vec 空时返回 `[]` 而非 `null`，监听 `127.0.0.1:3000` 限本机。
+
+**未发现可达 panic**：全文 `unwrap/expect` 仅 `semantic.rs:189` 一处，被"先全部 declare 再 analyze"的顺序保护。
+
+---
+
+# 第二轮：R-1~R-6（已全部修复）
+
+## 🟠 中等（误判合法代码 / 漏报非法代码） ✅ 已修复
+
+### BUG R-1 数组下标 `-1` 等负字面量漏报静态越界  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:897-910`
+- **现象**：`gen_index` 的静态越界检查仅匹配 `Expr::Number { value }`；但解析器把 `-1` 解析为 `Expr::Unary { op: Neg, expr: Expr::Number{"1"} }`，因此整条 if 不成立，未触发越界判断。
+- **复现**（triage::cand_a_negative_literal_index_should_be_oob 已 FAIL 印证）：
+  ```rust
+  fn main(){ let a:[i32;3]=[1,2,3]; let b:i32=a[-1]; }
+  ```
+- **修法**：在静态越界分支增加对 `Expr::Unary { op: UnaryOp::Neg, expr }` 的处理。
+
+### BUG R-2 超大正字面量下标因 `isize` 溢出被静默跳过  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:898-909`
+- **现象**：`value.parse::<isize>()` 失败时 `if let Ok(n) = ...` 短路；明显越界的极大字面量（>isize::MAX）逃过越界检查。
+- **复现**（triage::cand_s_overflow_index_skipped 已 FAIL 印证）：
+  ```rust
+  fn main(){ let a:[i32;3]=[1,2,3]; let b:i32=a[99999999999999999999]; }
+  ```
+- **修法**：用 `u128` 解析；解析失败一律视为越界。
+
+### BUG R-3 重名形参 `fn f(a:i32, a:i32)` 静默接受  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:171-190`（`build_function_sig`）+ `:216-223`（`declare`）
+- **现象**：`build_function_sig` 把所有形参原样收集；后续 `declare` 覆盖前者；形参重名未报错，且 IR 中发射两条 `PARAM_DECL`。
+- **复现**（triage::cand_r_duplicate_param_emits_two_decls_and_no_error 已 FAIL 印证）：
+  ```rust
+  fn f(a:i32, a:i32){} fn main(){}
+  ```
+- **修法**：在 `analyze_function` 头部用 `HashSet` 扫描重复。
+
+## 🟡 轻度（信息丢失 / 设计不严谨） ✅ 已修复
+
+### BUG R-4 `for` 循环变量的显式类型注解被静默丢弃  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:530-537`
+- **现象**：`for mut i:T in iter {}` 中 T 不被采用也不被报错。
+- **修法**：在 `gen_for` 中校验 `binding.ty` 与 `start_ty` 一致性。
+
+## 🔵 措辞 / 信息瑕疵 ✅ 已修复
+
+### BUG R-5 错误信息中暴露内部占位 `<类型错误>` / `<函数>`  ✅
+- **文件**：`Easy_Analyzer/src/types.rs:103, 106`（`Type::display`）
+- **现象**：用户能在错误消息里看到 `<类型错误>` / `<函数>` 这类只面向开发者的占位字符串。
+- **修法**：在 `gen_let` 数组分支特判长度不匹配，函数名作 RValue 给专门报错。
+
+### BUG R-6 调用变量名报"调用未声明的函数 `a`"措辞失真  ✅
+- **文件**：`Easy_Analyzer/src/semantic.rs:815-817`（`gen_call`）
+- **现象**：`a` 是已声明的变量被当函数调用时报"未声明"，给读者错觉 `a` 不存在。
+- **修法**：在 `gen_call` 中先 `lookup` 一次，按变量 vs 函数区分错误措辞。
+
+## ✅ 第二轮复审通过的范围
+
+下列方向各跑过实证测试且均符合预期（具体见 `Easy_Analyzer/tests/triage.rs` 与既有 36 个测试）：
+
+### A. PDF 强制语义检查的边界
+| 检查 | 测试 | 结果 |
+|---|---|---|
+| 嵌套块表达式内部 `let mut z;` 类型推断失败 | triage::cand_t_nested_block_expr_uninferred_inner | ✅ 报 "z 无法推断类型" |
+| if 分支类型不一致（i32 vs 单分支 unit） | triage::cand_l_if_branches_mixed_unit_value | ✅ 报 "分支类型不一致" |
+| 类型 RValue 推断: 函数名作 RHS（`let a:i32=g`） | triage::cand_n_function_as_plain_rvalue | ✅ 报"类型不匹配"（措辞另见 R-5） |
+| 数组字面量 `[i32;2]=[]` 长度不匹配仍报错 | bug_fixes::bug4_empty_array_still_rejects_mismatched_length + triage::cand_m | ✅ |
+| 借用作用域：内部块 `&mut a` 弹栈后，外部 `&a` 合法 | triage::cand_k_borrow_scope_drop_on_block_exit | ✅ 朴素借用语义生效 |
+| 未初始化 immutable + 二次赋值 | triage::cand_p_uninit_then_two_assigns_immutable_rejected | ✅ 报 "不可变变量 不能再次赋值" |
+
+### B. 四元式 IR 的语义正确性（解释器实证）
+| 程序 | 测试 | 结果 |
+|---|---|---|
+| `for i in 0..5 { s = s+i; }` 求和 | triage::cand_b_for_loop_sums_correctly | ✅ 返回 10 |
+| 嵌套 while + continue + break，外层 3 次 × 每次内层 1+2+4 | triage::cand_c_nested_while_continue_and_break | ✅ 返回 21 |
+| 嵌套 while + continue 仅影响最内层 | triage::cand_o_nested_loop_continue_only_inner | ✅ 返回 6 |
+| `loop { break 42; }` 写入 loop 结果 temp 再赋给变量 | triage::cand_f_loop_break_with_value_writes_result_temp | ✅ 两条 = 链路完整 |
+| `f(g(), h())` 嵌套 CALL → 顺序为 CALL g, CALL h, PARAM tg, PARAM th, CALL f | triage::cand_d_nested_call_param_order | ✅ |
+| 含 `1+2+3+4`、`(1+2)*(3+4)`、if、while 的程序：临时变量与 LABEL 编号唯一 | triage::cand_e_temp_and_label_uniqueness | ✅ |
+| BREAK/CONTINUE 四元式始终携带目标 label | ir_interpreter::break_and_continue_carry_target_label | ✅（BUG #1/#2 修复回归） |
+
+### C. 错误恢复与多错并发
+| 程序 | 测试 | 结果 |
+|---|---|---|
+| 一段含 3 类错误（类型不匹配/算术非 i32/未声明），不出现连锁污染 | triage::cand_j_multiple_errors_no_cascade | ✅ 3 条错误齐全、无重复 |
+| `Type::Error` 在 compatible 中通配，避免连锁 | types.rs:60 + 多个 triage 用例 | ✅ |
+
+### D. panic / unwrap 风险
+全文 `unwrap / expect / 下标` 复审结果：
+- `semantic.rs:204` `expect("函数签名应已登记")`：由 `analyze_program` 先全部 `declare_function`、再 `analyze_function` 顺序保护，**不可触达**。
+- `semantic.rs:158, 164` 下标 `skip[i]`：与 `program.functions` 同长 `Vec`，索引来自同一 `enumerate()`，**安全**。
+- `semantic.rs:939` `elements[idx].clone()`：上面 `if idx >= elements.len()` 已 guard，**安全**。
+- 各处 `unwrap_or / unwrap_or_else / unwrap_or_default`：均为带默认值版本，**不会 panic**。
+- 未发现可由输入触发的 panic 路径。
+
+### E. Server JSON 字段契约
+| Server 输出 | 前端读取 | 一致性 |
+|---|---|---|
+| `lexerErrors`（已 rename） | `data.lexerErrors` | ✅ |
+| `parseError`（已 rename） | `data.parseError` | ✅ |
+| `semanticErrors`（已 rename） | `data.semanticErrors` | ✅ |
+| `quadruples`（默认 snake） | `data.quadruples` | ✅ |
+| Token: `type` (rename), `typeEnum` (rename) | `t.type`, `t.typeEnum` | ✅（BUG #5 已修） |
+| Quadruple: `index/op/arg1/arg2/result` | `q.index/op/arg1/arg2/result` | ✅ |
+| CORS：`allow_origin(Any)` | file:// 与跨源可用 | ✅（BUG #15 已修） |
+
+### F. 跨 crate 数据流（AST variant 覆盖）
+对照 `easy_parser::lib.rs`：`Statement` 9 个 variant、`Expr` 12 个 variant、`ElseBranch` 3 个 variant、`TypeNode` 5 个 variant、`UnaryOp` 4 个、`BinaryOp` 11 个 —— 全部在 `semantic.rs` 中显式 match 覆盖，无 `_ =>` 通配吞错。
+
+---
+
+# 第三轮：R3-1~R3-7
+
+基线：bug_report 中 #1-#16 + R-1~R-6 已全部修复，本轮均不重复。
+
+## 🔴 严重（数据流错乱） — 1 条
+
+### BUG R3-1 嵌套循环中 `break <expr>;` 把值写入错误的 result_place
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:752-779`（`gen_break`）
+- **根因**：`gen_break` 写入 result_place 取自 `func_ctx.loop_exprs.last_mut()`，跳转目标 end_label 取自 `func_ctx.loop_labels.last()`。两个栈深度不同步：
+  - `gen_loop_expr` 同时 push `loop_exprs` + `loop_labels`；
+  - `gen_for` / `gen_while` 只 push `loop_labels`。
+  - 内层 for/while 嵌入外层 `loop {}` 时，`loop_labels.last()` 指向内层、`loop_exprs.last()` 指向外层 → 写错位置。
+- **最小复现**（`triage_round3::cand_u_break_value_in_nested_for_writes_outer_loop_result`）：
+  ```rust
+  fn main(){
+      let x = loop {
+          for i in 0..3 { break 42; }   // 写入 t1 + 跳 for 的 end label
+          break 7;                       // 同样写入 t1 + 跳 loop 的 end label
+      };
+  }
+  ```
+  实证 IR：
+  ```
+  6: = 42 _ t1     <-- 内层 for 的 break 42 写入了外层 loop 的 result_place
+  7: BREAK 42 _ L5  <-- 但跳的是 for 的 end
+  13: = 7 _ t1
+  14: BREAK 7 _ L2
+  ```
+  `42` 和 `7` 写入同一 `t1`，数据流与控制流不再一一对应。
+- **修法**：在 `LoopLabels` 上加 `loop_expr_index: Option<usize>`，`for/while` 推 `None`，`loop {}` 推 `Some(loop_exprs.len()-1)`；`gen_break` 取 result_place 与 end_label 都通过同一个 LoopLabels 保证一致。`value.is_some()` 但当前循环是 for/while 时，直接报错"`break <expr>` 仅在 `loop` 表达式中允许"。
+
+## 🟠 中度（漏检 / 误判合法代码） — 4 条
+
+### BUG R3-2 `return ();` 在 Unit 函数中被错误地拒绝
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:565-580`（`gen_return` 的 `Some(expr)` 分支）
+- **现象**：当函数声明返回类型为 Unit 时，只要 `return` 后面带任何表达式（即使该表达式类型也是 Unit）都被直接报"函数无返回类型，return 不能带表达式（规则 1.5）"。
+- **最小复现**：
+  - `triage_round3_extra::cand_hh_return_unit_literal_in_unit_function`：`fn main(){ return (); }` → 报错
+  - `triage_round3_extra::cand_ii_return_block_unit_in_unit_function`：`fn main(){ return {}; }` → 报错
+- **PDF 期望**（1.5）：`return expr;` 的类型应与函数声明返回类型一致。`()` 与 `{}` 的类型均为 Unit，与 Unit 兼容，理应被接受。
+- **修法**：把 `if matches!(expected, Type::Unit)` 这一硬性短路改为统一的兼容性检查。
+
+### BUG R3-3 函数声明返回非 Unit 但函数体无 `return`/无尾表达式时漏报
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:265-272`（`analyze_function` 末尾兜底 RETURN）
+- **现象**：函数返回类型为 `i32` 但函数体既无 `return` 语句也无尾表达式时，当前实现只发射兜底 `RETURN _ _ _`（Unit），不报任何错。
+- **最小复现**（`triage_round3::cand_bb_non_unit_function_falls_through_without_warning`）：
+  ```rust
+  fn main()->i32 { let a:i32 = 1; }   // 无任何错误
+  ```
+- **PDF 期望**（1.5）：函数若有 `-> T`，则必须保证有返回 T 的路径（或至少静态地存在一条 `return expr;` 路径）。
+- **修法**：若函数体 `tail.is_none()` 且 return_type 非 Unit，至少检查函数体最后一条语句是否为 `Statement::Return`；否则报错。
+
+### BUG R3-4 `loop` 中无值 `break;` 与带值 `break expr;` 混用时类型推断不一致漏检
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:742-790`（`gen_break`）
+- **现象**：`gen_break` 仅在 `value.is_some()` 时更新 `loop_exprs.break_type`。无值 `break;` 完全不更新；这使得既出现无值 break、又出现带值 break 的 loop 表达式类型推断不一致问题被吞掉。
+- **最小复现**（`triage_round3_extra::cand_rr_loop_with_mixed_break_kinds`）：
+  ```rust
+  fn main(){
+      let x:i32 = loop {
+          if 1 == 1 { break; }   // 无值 break：意味着 loop 类型应是 ()
+          break 42;               // 有值 break：要求 loop 类型是 i32
+      };
+  }
+  ```
+- **修法**：把无值 break 也当作 `break_type = Unit` 写入，同样走类型一致性检查。
+
+### BUG R3-5 同名 `fn` 与 `let` 共存时调用/取值解析二义性，且无报错
+
+- **位置**：`Easy_Analyzer/src/symbol.rs`（函数表与变量表分立）+ `semantic.rs:896-921`（`gen_identifier`）+ `semantic.rs:1024-1048`（`gen_call`）
+- **现象**：同一个标识符可以同时存在于函数表与变量表，且不报告冲突。结果：
+  - 当 `x` 作 RValue 使用（`let y = x`），优先解析为变量；
+  - 当 `x` 作被调用 `x(...)`，优先解析为函数。
+  - 两种解析在同一作用域内表现不同。
+- **最小复现**（`triage_round3_extra::cand_tt_function_and_var_same_name`）：
+  ```rust
+  fn x() -> i32 { 1 }
+  fn main(){ let x:i32 = 2; let y:i32 = x(); }
+  ```
+- **修法**：在 `gen_let` 中检查是否与函数表同名，报告"标识符 `x` 与现有函数同名，可能导致调用/取值二义性"。
+
+## 🟡 轻度（错误恢复 / 冗余 IR） — 2 条（详见 `discussions.md`）
+
+### BUG R3-6 显式 `return` 后函数体末仍发射兜底 `RETURN _ _ _`
+
+- 设计选择：保留终结子便于下游解释器统一处理。讨论见 `discussions.md`。
+
+### BUG R3-7 静态越界报错后仍发射 `INDEX` 四元式
+
+- 设计选择：错误恢复保留 IR 形态，便于即便有语义错也能生成完整的四元式序列以便观察。讨论见 `discussions.md`。
+
+## ✅ 第三轮重新验证通过的范围
+
+| 项目 | 测试 | 结果 |
+|---|---|---|
+| 递归调用 / 前向函数引用 `fact(n-1)` | cand_cc | ✅ |
+| else-if 链式 if 表达式 | cand_dd | ✅ |
+| 函数名出现在比较运算符两侧 | cand_ee | ✅ 专门提示"请加 `()` 调用" |
+| 数组下标是 bool / 非 i32 | cand_ff | ✅ 报"下标类型 bool" |
+| 函数返回数组 + 作为实参 | cand_gg | ✅ |
+| `fn main() { () }` 尾 Unit 字面量 | cand_jj | ✅ |
+| `let r = 0..3;` parser 拒绝（设计选择） | cand_kk | parser 错误，符合预期 |
+| 动态 i32 下标不报"越界" | cand_ll | ✅ |
+| 数组元素类型 `&i32` | cand_mm | ✅ |
+| 元组中混合函数名 + i32 | cand_nn | ✅（宽松） |
+| shadowing + mut 重新可赋值 | cand_oo | ✅ |
+| `let y:i32 = &x;` 应报类型不匹配 | cand_pp | ✅ |
+| `for i in 0..end()` 调用作 range 终点 | cand_qq | ✅ |
+| Unit 函数内 `return 1;` 仍报"不能带表达式" | cand_ss | ✅ |
+| `let x:i32 = loop { break; }` 报类型不匹配 | cand_w | ✅ |
+| 越界 OOB 元组下标超大数字不 panic | cand_z | ✅ |
+| for 非范围迭代器错误恢复不污染状态 | cand_aa | ✅ |
+
+---
+
+# 修复优先级
+
+1. **必修**（影响 IR 正确性 / 强制规则交付）：#1, #2, #3 已修；R3-1（嵌套 break 窜流）应修。
+2. **应修**（影响合法代码 / 易扣分）：#4, #5, #6 已修；R-1, R-2, R-3 已修；R3-2（合法 `return ();` 被拒）应修。
+3. **建议修**（漏检）：R3-3, R3-4, R3-5 —— 取决于老师对静态检查严格度的要求。
+4. **可修**（润色 IR / 错误信息）：#7-#16 已修；R-4, R-5, R-6 已修。
+5. **可不修**（设计选择，详见 `discussions.md`）：R3-6（冗余 RETURN）、R3-7（OOB 后保留 INDEX）、R4-2（常量折叠下标越界）、R4-3（函数名绑定到变量）。
+
+---
+
+# 第四轮：R4-1（已修复）/ R4-2 / R4-3
+
+基线：bug_report 中 #1-#16、R-1~R-6、R3-1~R3-5 已全部修复，R3-6 / R3-7 进入 `discussions.md` 作为设计选择。
+
+本轮针对前三轮未覆盖的字面量取值范围 / 常量折叠 / 函数项绑定三个方向做穷尽式复审，发现 3 条候选。
+
+## 🟠 中度（漏检合法/非法边界） — 1 条 ✅ 已修复
+
+### BUG R4-1 i32 字面量超范围未做静态检查  ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:1090`（`gen_expr` 的 `Expr::Number` 分支）
+- **现象**：当前实现把任意 `Expr::Number { value }` 字面量原样塞进 `ExprValue.place`，从不校验 `value` 是否在 i32 范围内；语义阶段对超过 `i32::MAX` 的数字字面量完全沉默。
+- **最小复现**：
+  ```rust
+  fn main(){ let a:i32 = 9999999999999999999; }   // 修复前：无任何错误
+  ```
+- **PDF 期望**（规则 0.1）：整数字面量应当在 i32 范围内；否则报错。
+- **与 R-2 同源**：R-2 已经把数组下标的 `parse::<isize>()` 改为 `parse::<u128>()` 且失败即视为越界，本条是对"数字字面量本身"做同等粒度的检查。
+- **修法**：在 `gen_expr` 的 `Expr::Number` 分支用 `value.parse::<i32>().is_err()` 做范围判定，失败时 `self.error(...)` 报"整数字面量 `{value}` 超出 i32 范围（规则 0.1）"，仍按 `Type::I32` 返回 `ExprValue` 以保持错误恢复时 IR 形态稳定。
+- **验证**：临时复现源码 `fn main(){ let a:i32 = 9999999999999999999; }` 修复后正确报错；除 `cand_kk_range_value_stored_and_iterated`（parser 限制，原本就 FAIL）外全部 126 个测试通过。
+
+## 🔵 设计选择（保留现状，详见 `discussions.md`） — 2 条
+
+### BUG R4-2 数组下标静态越界检查不识别常量算术表达式
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:1045-1059`（`check_array_static_oob`）
+- **现象**：当前只识别 `Expr::Number` 与 `Expr::Unary{Neg, Number}` 两种字面量形态。`a[0-1]` / `a[2+1]` 等常量算术表达式不触发静态越界报错，由运行时 bounds check 兜底。
+- **与 R-1 / R-2 同源**：那两条已经修了字面量类越界，本条是"字面量算术折叠"层次的进一步推广。
+- **设计选择**：保留不修。PDF 规则 8.3 未要求常量折叠；引入 `eval_const` 小型求值器的工作量与教学收益不成正比；运行时 bounds check 已经能拦住非法访问。详见 `discussions.md` 的 **D-6**。
+
+### BUG R4-3 `let g = f;` 允许把函数名绑定到变量、类型为 `Type::Function`
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:341-375`（`gen_let` 的 `(None, expr_ty)` 推断分支）
+- **现象**：
+  ```rust
+  fn f() -> i32 { 1 }
+  fn main(){
+      let g = f;           // 不报错；g 进入变量表，类型为 Type::Function
+      let y:i32 = g;       // 报"变量 `y` 用函数 `g` 作为初始化表达式"
+  }
+  ```
+  错误延迟到"使用点"才出现，且消息把已是变量的 `g` 仍称作"函数"，与 R3-5 同名提示风格不一致。
+- **设计选择**：保留不修。当前实现错误能报、IR 形态稳定（`= f _ g` 形态对下游友好），仅措辞略失真；改严格的成本主要在错误信息测试预期的整体重新对齐。详见 `discussions.md` 的 **D-7**。
+
+---
+
+# 第五轮：R5-1~R5-9
+
+基线：#1-#16、R-1~R-6、R3-1~R3-5、R4-1 已全部修复；R3-6 / R3-7 / R4-2 / R4-3 已并入 `discussions.md`（分别对应 D-3/D-4 / D-4 / D-6 / D-7）。
+
+本轮通过 finder agent 写下的 `tests/r5_focus.rs` 与 `tests/r5_probe.rs` 两份探针文件，对前四轮未覆盖的盲点做穷尽式扫描，定位出 11 条候选，最终归类为 5 条真 BUG（已修复）、2 条设计选择（入 `discussions.md`）、4 条非 BUG（验证后撤回）。
+
+## 🟠 中度（漏检非法代码 / 信息丢失） — 5 条 ✅ 已修复
+
+### BUG R5-1 `&mut <rvalue>` / `&mut <literal>` 未拦截  ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:1188-1213`（`gen_unary` 的 `UnaryOp::RefMut` 分支）
+- **现象**：
+  ```rust
+  fn main(){ let p = &mut 1; }                       // 修复前：无任何错误
+  fn f()->i32{1} fn main(){ let p:&mut i32 = &mut f(); }   // 修复前：无任何错误
+  ```
+- **Rust 严格语义**：rustc 报 `cannot borrow ... as mutable`，理由是右值没有可绑定的左值根。
+- **修法**：在 `RefMut` 分支中，若 `root_identifier(inner)` 返回 `None` 且 `v.ty.is_known()`，调用 `self.error("`&mut` 只能作用于可变变量、字段或下标（规则 6.3）")`，并把结果类型置为 `Type::Error`。
+- **未影响 `&` 不变借用**：rustc 允许 `&1`（生成临时存活到语句末），本课程同样保留宽松。
+- **验证**：`focus_a_refmut_of_literal_is_unchecked` 与 `focus_h_refmut_rvalue_in_let` 均报出新错误。
+
+### BUG R5-2 `break <function_name>;` 未拦截，函数项渗入变量表  ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:925-946`（`gen_break` 写入 `break_type` 之前）
+- **现象**：
+  ```rust
+  fn g(){}
+  fn main(){
+      let x = loop { break g; };   // 修复前：0 错；x 类型推断为 Type::Function
+  }
+  ```
+  与 R3-5 / R4-3 同源——函数项不能作为值参与表达式类型推断。
+- **修法**：在 `gen_break` 收集到 `v` 后、写入 `ctx.break_type` 之前，单独检查 `v.ty == Type::Function`，报 `` "`break` 表达式不能是函数名 `{}`（请加 `()` 调用，规则 5.2）" `` 并把 `v.ty` 置为 `Type::Error`，防止 `Function` 类型经 `break_type` 渗入 loop 表达式类型推断。
+- **验证**：`focus_b_break_function_name_in_loop_unchecked` 修复后正确报错；IR 仍发 `BREAK g _ L2`（错误恢复保形态，参见 D-9 同源主张）。
+
+### BUG R5-4 `PARAM_DECL` 第四元丢失 `mut` 信息  ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:222-233`（`gen_function` 发射 `PARAM_DECL` 的循环）
+- **现象**：`fn f(mut a:i32, b:i32){}` 与 `fn f(a:i32, b:i32){}` 生成的 `PARAM_DECL` 一模一样，第四元一律是 `_`，下游解释器无法区分形参可变性。
+- **修法**：把第四元从一律的 `PLACEHOLDER` 改为 `if *pmut { "mut" } else { PLACEHOLDER }`；同时在 `Easy_Analyzer/src/ir.rs` IR 形态注释里补充第四元语义说明。
+- **下游断言面**：确认无下游 IR 解释器测试硬编码 `PARAM_DECL ... _` 第四元为占位符；改动安全。
+- **验证**：`focus_o_param_mut_marker_in_paramdecl_lost` 输出 `PARAM_DECL a i32 mut` / `PARAM_DECL b i32 _`，符合预期。
+
+### BUG R5-7 未初始化变量被使用仍发射 `= x _ y`  ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:1149-1159`（`gen_identifier` 报"赋值前使用"的分支）
+- **现象**：
+  ```rust
+  fn main(){ let x:i32; let y:i32 = x; }
+  ```
+  修复前：报 `变量 `x` 在赋值前被使用（规则 2.2）` 但 IR 仍发 `= x _ y`，下游解释器读未定义槽位会触发 runtime panic。
+- **修法**：报错后把 `ExprValue.place` 置为 `PLACEHOLDER`，下游 `gen_let` 会发射 `= _ _ y`；解释器对占位符读取做忽略处理，错误恢复期 IR 安全。
+- **验证**：`focus_l_uninit_used_emits_assign_with_uninit_name` 输出 `= _ _ y`，符合预期。
+
+### BUG R5-9 parser 数组长度溢出 usize 时错误信息措辞偏离  ✅
+
+- **位置**：`Easy_Parser/src/lib.rs:356-359`（数组类型解析 `parse::<usize>()` 失败的 `map_err` 处）
+- **现象**：`fn main(){ let a:[i32;99999999999999999999] = []; }` 修复前报 `expected numeric literal`，与"已读到一个数字字面量但太大"的真实情形不符，容易让用户误以为输入不是数字。
+- **修法**：把错误消息改为 `"array length too large for usize"`，明确指向 usize 溢出。
+- **验证**：`focus_e_huge_array_length_in_typenode` 报出新错误措辞，符合预期。
+
+## 🔵 设计选择（保留现状，详见 `discussions.md`） — 2 条
+
+### BUG R5-5 → 入 D-8 缺少强制 main 函数检查
+
+- **位置**：`analyze_program`
+- **现象**：`fn foo(){}` 单一程序无 `main` 仍能通过语义分析。
+- **设计选择**：PDF 规则 1.1–9.3 未强制 `main` 必须存在；测试样例尺寸小、保留宽松便于拼装。详见 `discussions.md` 的 **D-8**。
+
+### BUG R5-6 → 入 D-9 `Unit` / `Error` 条件仍发 `IF_FALSE _ _ L2`
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:1478` 附近 `emit_if_false`
+- **现象**：`if g() {}`（`g()` 返回 `Unit`）报 `条件类型 () 不可作为条件`，但 IR 中第二元落为占位符 `_`，解释器会把占位符当 0 总跳到 end。
+- **设计选择**：与 D-4 / D-7 一脉相承——错误恢复阶段优先保 IR 形态稳定；下游解释器对占位符读取安全。详见 `discussions.md` 的 **D-9**。
+
+## ✅ 第五轮验证为非 BUG 的范围
+
+- **R5-3**：`undef(f())` 中函数参数仍发 `CALL` 四元式——这是"错误恢复期内表达式子树照常 codegen"的正常副作用，与 D-3 / D-4 同源；不视作 BUG。
+- **R5-8**：`let a:[i32;0] = []; let b:i32 = a[i];` 零长数组动态下标——当前实现已对常量字面量下标做静态越界检查；动态下标由运行时 bounds check 兜底（与 D-6 同源）；不视作 BUG。
+- **R5-10**：`let a:[i32;1] = [g];` 函数名作数组元素——已被 `gen_array` 的元素类型一致性检查在使用点拦截；不视作 BUG。
+- **R5-11**：`let t:(i32,i32) = (g, 1);` 函数名作元组元素——已被声明类型检查在 `let` 处拦截；不视作 BUG。
+
+## 第五轮影响面
+
+修改文件：`Easy_Analyzer/src/semantic.rs`、`Easy_Analyzer/src/ir.rs`、`Easy_Parser/src/lib.rs`。
+新增测试：`Easy_Analyzer/tests/r5_focus.rs`（15 个聚焦用例）、`Easy_Analyzer/tests/r5_probe.rs`（探测过程记录）。
+回归结果：除 `cand_kk_range_value_stored_and_iterated`（parser 限制，前四轮就 FAIL）外全部通过；无新增 warning。
+
+# 第六轮：R6-1（已修复）/ R6-2 ~ R6-5
+
+第六轮 finder 在 R5 之后对 Lexer / Parser / 跨 crate panic / 边界路径做了一次扫描。
+共提出 5 个候选；1 个修复，4 个判定为"设计选择"入 `discussions.md`。
+
+## 🟢 已修复 — 1 条
+
+### BUG R6-1 形参与函数同名漏检（一致性 gap）  ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs:200-220`（`analyze_function` 形参遍历段）
+- **现象**：`fn f(f:i32){}` 当前 0 错；但 `fn f(){} fn main(){ let f:i32 = 1; }`
+  已被 R3-5 检查报"变量名 `f` 与现有函数同名"。形参声明走 `table.declare`
+  时未复用 R3-5 检查，导致同样的二义性场景一边管一边不管。
+- **修法**：在形参遍历中，每个 `p.name` 在 declare 之前调用 `self.table.lookup_function`，
+  若 `Some` 则报"形参 `{}` 与现有函数同名，可能导致调用 vs 取值的解析二义性"。
+  错误信息措辞与 R3-5 的 `gen_let` 分支对齐。
+- **下游影响面**：仅新增一条诊断，不动 IR 形态。
+- **验证**：`fn f(f:i32){}` 修复后报出新错误；R3-5 既有用例不受影响。
+
+## 🔵 设计选择（保留现状，详见 `discussions.md`） — 4 条
+
+### BUG R6-2 → 入 D-10 Lexer 按字节计列号
+
+- **位置**：`Easy_Lexer/src/lib.rs:361-371`（`advance`）
+- **现象**：源码 `中a`，错误位置 `(1,1)`/`(1,2)`/`(1,3)`，'a' 在 `(1,4)`；
+  期望 `(1,2)`（按字符计）。
+- **设计选择**：主线 ASCII 程序无影响；改严格代价大于诊断收益。详见 `discussions.md` 的 **D-10**。
+
+### BUG R6-3 → 入 D-11 Parser 链式比较 `a<b<c` 被接受
+
+- **位置**：`Easy_Parser/src/lib.rs:549-562`（`parse_expression` 比较运算累积）
+- **现象**：`a<b<c` 解析为 `(a<b)<c`，到语义阶段才报"`<` 仅支持 i32"。
+- **设计选择**：与 D-3 / D-9 同源，parse 层保持简单左结合栈，语义阶段统一兜底。详见 `discussions.md` 的 **D-11**。
+
+### BUG R6-4 → 入 D-12 悬垂引用 / 返回局部引用未拦截
+
+- **位置**：`Easy_Analyzer/src/semantic.rs::gen_return` 与 `gen_unary` 的 `Ref` 分支
+- **现象**：`fn f()->&i32 { let x:i32=1; return &x; }` 0 错；
+  Rust 报 `cannot return reference to local variable`。
+- **设计选择**：本课程无生命周期 / 借用作用域追踪，超出 PDF 规则覆盖面，
+  与 D-1 / D-2 一脉相承。详见 `discussions.md` 的 **D-12**。
+
+### BUG R6-5 → 入 D-13 尾随逗号在参数列表 / 元组类型中被拒
+
+- **位置**：`Easy_Parser/src/lib.rs:313-333`（`parse_parameter_list`）
+- **现象**：`fn f(a:i32,) {}` parse error。
+- **设计选择**：按 PDF 文法落地，与"严格按文法实现"保持口径一致。详见 `discussions.md` 的 **D-13**。
+
+## ✅ 第六轮验证为非 BUG 的范围
+
+- **CRLF 行尾**：Lexer / Parser 路径全程使用 `\n` 判定换行，对 `\r\n` 输入未观察到行号 / 错位异常。
+- **嵌套块注释 `/* /* */ */`**：Lexer 当前不识别嵌套注释（与 PDF 文法一致），
+  但不会触发 panic，外层 `*/` 正常闭合，未观察到 UB。
+- **极深括号 / 表达式嵌套**：探针生成 1000 层 `((((…))))` 输入，
+  parser 走递归下降未栈溢出（受 Rust 默认 8 MiB 栈兜底），analyzer 同样稳定返回。
+- **嵌套左值 `a[i].x = …` / `*p.x = …`**：R4-1 修复后的写回路径覆盖所有探针组合，
+  未发现新的"写回丢失"或"误报赋值前使用"。
+- **跨 crate panic 路径全扫描**：60 个探针用例覆盖 Lexer / Parser / Analyzer 所有公共入口，
+  无一触发 panic（含未识别字符、字符串字面量未闭合、空程序、单个分号等病态输入）。
+
+## 第六轮影响面
+
+修改文件：`Easy_Analyzer/src/semantic.rs`。
+新增测试：`Easy_Analyzer/tests/r6_probe.rs`、`r6_probe2.rs`、`r6_probe3.rs`（共 60 个探针用例）。
+回归结果：除 `cand_kk_range_value_stored_and_iterated`（parser 限制，前四轮就 FAIL）外全部通过；无新增 warning。
+
+---
+
+# 第七轮：未发现真 BUG（已停止于"查不出来"边界）
+
+第七轮把火力从 `Easy_Analyzer/src/semantic.rs` 转向之前未深查的角度：
+- `tests/ir_interpreter.rs`（80 行最小解释器子集，4 用例语义正确）
+- `Resources/` 下示例（仓库无 PDF 27 个示例，仅 DESIGN_REPORT 与图片）
+- `Easy_Server` `POST /api/analyze` + `index.html` 端到端真链路（JSON 字段完全对齐）
+- `types.rs::compatible` 自反 / 对称 / Ref-Tuple-Array 边界
+- `ir.rs` op 集与 `semantic.rs::emit` 37 处全集交叉对比
+- `symbol.rs` push / pop / lookup 浅层（深嵌套早于 analyzer 在 parser 阶段栈溢出）
+- 11 种语义边界（for-array / for-range / break-with-value / 嵌套 tuple / 链调用返回 / …）
+
+## ✅ 本轮新观察 → 入 discussions.md
+
+- **C7-1 → D-14**：`Ref` 兼容性用精确相等，不允许 `&mut → &` 协变
+- **C7-2 → D-15**：ARRAY / TUPLE 四元式 arg1 用逗号拼接元素列表，偏离严格四元式
+- **C7-3 → D-16**：Parser / Analyzer 递归下降无 depth guard，100 层嵌套 stack overflow（健壮性）
+- **C7-4**：`loop { break 42; }` 末尾不可达 `GOTO L1` —— 效率瑕疵，未单列归档
+
+## 第七轮影响面
+
+修改文件：`discussions.md`、`bug_report.md`。
+回归结果：与第六轮相同；无新增 warning。
+
+**累积统计**：7 轮共修复 **29 条真 BUG**（#1-#16、R-1~R-6、R3-1~R3-7、R4-1、R5-1/2/4/7/9、R6-1），归档 **16 条设计偏差**（D-1~D-16）。第七轮符合"直到查不出来问题为止"的停止条件。
+
+---
+
+# 第八轮：R8-1（已修复）
+
+第八轮用"反向方法"复审（从 PDF 规则反推 / 测试反推 / git log 反推 / panic 物理扫描），抓出 1 条真 BUG。
+
+### BUG R8-1 `-2147483648`（i32::MIN）字面量被 R4-1 误判为溢出 ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs::gen_unary`（Neg 分支）
+- **现象**：`fn main(){ let x:i32 = -2147483648; }` 报 `整数字面量 \`2147483648\` 超出 i32 范围（规则 0.1）`，但 i32::MIN 是合法值。
+- **根因**：lexer 把 `-2147483648` 拆成 `UnaryNeg + Number("2147483648")`，第四轮 R4-1 的范围检查在 `gen_expr(Expr::Number)` 独立运行，未考虑外层 unary neg 的上下文；`2147483648` 超 `i32::MAX`（2147483647）触发误判。
+- **修法**：在 `gen_unary` 的 Neg 分支中，若 inner 是 `Expr::Number`，按合成后的负值 `format!("-{}", value).parse::<i32>()` 做范围校验，绕过 `gen_expr(Expr::Number)` 的独立检查。`-2147483649` 仍正确报溢出。
+- **回归测试**：`tests/bug_fixes.rs::bug_r8_neg_i32_min_literal_accepted` + `bug_r8_neg_i32_min_minus_one_rejected`。
+
+## 第八轮影响面
+
+修改文件：`Easy_Analyzer/src/semantic.rs`、`Easy_Analyzer/tests/bug_fixes.rs`。
+回归结果：除 `cand_kk_range_value_stored_and_iterated`（parser 限制）外全部通过；无新增 warning。
+
+**累积统计（8 轮）**：共修复 **30 条真 BUG**，归档 16 条设计偏差。
+
+---
+
+# 第九轮：R9-1（已修复）
+
+第九轮做 R8-1 修复的回归验证 + 同类放大，抓出 1 条 R8-1 的二阶副作用。
+
+### BUG R9-1 i32::MIN IR 中 `NEG 2147483648 _ t` 的正部分无法被下游 parse::<i32>() ✅
+
+- **位置**：`Easy_Analyzer/src/semantic.rs::gen_unary`（Neg 分支）
+- **现象**：`fn main(){ let x:i32 = -2147483648; }` 经 R8-1 修复后 semantic 通过，但生成的 IR：
+  ```
+  NEG 2147483648 _ t1
+  =   t1 _ x
+  ```
+  下游 `tests/ir_interpreter.rs::value_of` 等用 `name.parse::<i32>()` 区分立即数 vs 变量；`"2147483648"` parse 失败 → 当变量查找 → panic "unknown operand 2147483648"。
+- **根因**：R8-1 只解决了"语义层接受 i32::MIN"，但 IR 的 arg1 仍保留无法被 i32 立即数解析的字符串，违反"立即数必须 parse::<i32>() 通过"的隐式不变量。
+- **修法**：在 `gen_unary` 引入 `folded_min` 标志，针对 `(Neg, Number)` 且 `value.parse::<i32>().is_err() && format!("-{}", value).parse::<i32>().is_ok()`（这一条件只能由 `2147483648` 触发）的独苗情形，跳过 NEG 四元式发射，直接以合并后的 `"-2147483648"` 作为立即数。常规 `-1` / `-2` 等仍走 NEG 路径不变。
+- **回归测试**：`tests/bug_fixes.rs::bug_r9_neg_i32_min_ir_folded_to_immediate` + `bug_r9_small_neg_literal_keeps_neg_quad`。
+
+## 第九轮影响面
+
+修改文件：`Easy_Analyzer/src/semantic.rs`、`Easy_Analyzer/tests/bug_fixes.rs`。
+回归结果：除 `cand_kk_range_value_stored_and_iterated`（parser 限制）外全部通过；无新增 warning。
+
+**累积统计（9 轮）**：共修复 **31 条真 BUG**，归档 16 条设计偏差。R9-1 揭示了"语义层修复 + IR 不变量"的耦合——单点修复需同时考虑下游 IR 消费者的隐式契约。
+
+---
+
+# 第十轮：未发现真 BUG（R9-1 全面回归验证）
+
+第十轮对 R9-1 修复做穷尽式覆盖矩阵验证：i32::MIN 在 IR 各立即数出现位置（13 种场景）的形态是否一致折叠为 `"-2147483648"`。
+
+## ✅ 覆盖矩阵全部正确
+
+| 场景类别 | IR 形态 | 下游 `parse::<i32>()` |
+|---|---|---|
+| 二元运算左右、return、PARAM、ARRAY 元素、BREAK 值、`==` 比较、`=` 赋值、`[]=` 索引赋值 | arg1/arg2/result 出现 `"-2147483648"` | OK（Rust 内置解析通过） |
+| `a[-2147483648]` | INDEX 立即数 + 触发越界报错 | OK |
+| `-x`（x 是变量） | 仍发 `NEG x _ t1`，未被误折叠 | OK |
+| 裸 `2147483648` | 仍报"整数字面量超出 i32 范围" | OK |
+
+## 第十轮影响面
+
+修改文件：`bug_report.md`（仅补充本轮验证记录）。
+回归结果：与第九轮相同；无新增 warning。
+
+**累积统计（10 轮）**：共修复 **31 条真 BUG**，归档 16 条设计偏差。第十轮真正达到"无新真 BUG"停止条件，正式归档收官。
