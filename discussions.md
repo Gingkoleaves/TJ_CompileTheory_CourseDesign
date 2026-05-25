@@ -529,10 +529,112 @@ fn main() {
 
 ---
 
+## D-14 `Ref` 类型兼容性用精确相等，不允许 `&mut → &` 协变
+
+### 现状
+
+- 位置：`Easy_Analyzer/src/types.rs:62`（`compatible` 的 `Ref` 分支）
+- 现象：当前实现要求 `Ref{mut: m1, inner: t1}.compatible(Ref{mut: m2, inner: t2})` 满足 `m1 == m2 && t1.compatible(t2)`。
+- 因此：
+  ```rust
+  fn main(){ let mut x:i32 = 1; let p:&i32 = &mut x; }
+  // 报：& i32 与 &mut i32 不兼容
+  ```
+
+### Rust 严格语义
+
+Rust 允许从 `&mut T` 隐式协变为 `&T`（共享引用是可变引用的弱化）；上述代码在 rustc 下合法。
+
+### 当前取舍的依据
+
+1. 课程 PDF 规则 6.3 / 6.4 仅描述"引用类型与被引用类型一致"，未规约 mut/shared 的协变；
+2. 教学示例几乎不出现"先取可变借用再以只读形式传递"的场景；
+3. 严格相等让借用计数（`register_borrow`）与 mut 检查口径一致，更易解释。
+
+### 改严格的成本
+
+- `compatible` 的 `Ref` 分支新增 `(true, false)` 单向通过：`&mut T` 可作为 `&T` 用；反向仍拒绝；
+- 借用计数侧需同步：若把 `&mut x` 作 `&T` 形参传递，是否还按"可变借用"计数；目前的简化借用模型不区分。
+
+### 决策点
+
+**是否引入 mut→shared 协变？**
+
+- 倾向"保留精确相等"：与简化借用模型口径一致；
+- 若答辩被问及，可指本条 D-14：本实现把"引用兼容"做成等价关系而非偏序，便于借用计数。
+
+---
+
+## D-15 ARRAY / TUPLE 四元式 arg1 用逗号拼接元素列表，偏离严格四元式形式
+
+### 现状
+
+- 位置：`Easy_Analyzer/src/semantic.rs::gen_array` / `gen_tuple`（emit 处）
+- 现象：`let a=[1,2,3];` 产出 `(ARRAY, "1,2,3", "3", t1)`；`let t=(1,2);` 产出 `(TUPLE, "1,2", "2", t1)`。
+- arg1 字段塞了多个元素的逗号分隔串，arg2 是元素个数。
+
+### 严格四元式定义
+
+经典四元式每元只承载单个操作数；多元素聚合应改用一系列 `STORE arr[i] = vi` 或 `INIT_LIST arr; PUSH v1; PUSH v2; …` 的展开形式。
+
+### 当前取舍的依据
+
+1. 下游解释器 / 翻译器靠"arg2 = 元素数"配合"arg1 切分"即可重建数组/元组初始值，没有多发 N 条 STORE 的开销；
+2. 课程评审看 IR 形态时，"一行表示一个聚合"对人眼更友好，便于打印；
+3. 拆成 N 条 STORE 会让数组初始化的 IR 长度等比膨胀，可读性下降。
+
+### 改严格的成本
+
+- 在 `gen_array` 后增发 `n` 条 `[]= v_i i a`（已是写下标的 op）；TUPLE 同理改用 `.=`；
+- 改完会破坏 `tests/ir_interpreter.rs` 与 `tests/bug_fixes.rs` 中所有断言 ARRAY/TUPLE 形态的用例（需统一刷新）。
+
+### 决策点
+
+**是否拆成 N 条 STORE？**
+
+- 倾向"保留聚合 op"：教学语义偏向可读性 / 紧凑度；
+- 若答辩被问及"四元式严格定义"，可指本条 D-15：本实现把"聚合初始化"作为一个紧凑 op 编码，arg2 编码元素数。
+
+---
+
+## D-16 Parser / Analyzer 递归下降无 depth guard，超深嵌套触发 stack overflow
+
+### 现状
+
+- 位置：`Easy_Parser/src/lib.rs::parse_block` / `parse_expression` 与 `Easy_Analyzer/src/semantic.rs::gen_block` / `gen_stmt` 全链
+- 现象：100 层嵌套 `{ { { … } } }` 在 parser 阶段先于 analyzer 触发 STATUS_STACK_OVERFLOW（Windows 默认线程栈 ~1MB）。
+- 实测：80 层正常；100 层 panic。
+
+### Rust 严格语义
+
+rustc 也是递归下降，但 release build 栈帧小、栈大；并显式做 macro/type 递归深度限制（`#![recursion_limit]`）。语法递归同样会爆栈，但实际门槛比 100 高得多。
+
+### 当前取舍的依据
+
+1. 教学示例最多 4-5 层嵌套，不会触发；
+2. 本仓库目标是"PDF 27 个示例 + 边界 corner case 测试"，不是任意代码鲁棒性测试；
+3. 加入 depth guard（如 `parse_block` 入口检查 `self.depth > MAX`）增加复杂度，且 MAX 取多少属取舍。
+
+### 改严格的成本
+
+- Parser 与 Analyzer 各自维护 `recursion_depth: usize`，进出每层 +/- 1；超过阈值（如 256）就 `error("nesting too deep")`；
+- 同步要在 `gen_expr` / `gen_block` / `gen_if_expr` 各递归点加入；
+- 改完需要新增 1 条 r7 测试断言 "256 层 OK，257 层报错"。
+
+### 决策点
+
+**是否加入 depth guard？**
+
+- 倾向"保留无限制"：课程示例覆盖不到 100 层；属健壮性增强而非正确性 bug；
+- 若未来要把本实现做成对外服务（用户提交任意 .rs 文件），需要把这条作为"DoS 防护"里程碑落地。
+
+---
+
 ## 写在最后
 
-D-1 / D-2 / D-5 / D-7 / D-8 / D-10 / D-12 / D-13 关乎"和 rustc 的语义距离"。
-D-3 / D-4 / D-6 / D-9 / D-11 关乎"错误恢复 vs IR 严谨性 / 静态分析深度"的设计取舍——共同主张是：
+D-1 / D-2 / D-5 / D-7 / D-8 / D-10 / D-12 / D-13 / D-14 关乎"和 rustc 的语义距离"。
+D-3 / D-4 / D-6 / D-9 / D-11 / D-15 关乎"错误恢复 vs IR 严谨性 / 静态分析深度"的设计取舍。
+D-16 关乎"健壮性 / DoS 防护"。共同主张是：
 
 > **语义阶段做检查、不做剪枝。** 报错给用户看；IR 给下游看，无论是否合法。
 

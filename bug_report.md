@@ -543,3 +543,30 @@
 修改文件：`Easy_Analyzer/src/semantic.rs`。
 新增测试：`Easy_Analyzer/tests/r6_probe.rs`、`r6_probe2.rs`、`r6_probe3.rs`（共 60 个探针用例）。
 回归结果：除 `cand_kk_range_value_stored_and_iterated`（parser 限制，前四轮就 FAIL）外全部通过；无新增 warning。
+
+---
+
+# 第七轮：未发现真 BUG（已停止于"查不出来"边界）
+
+第七轮把火力从 `Easy_Analyzer/src/semantic.rs` 转向之前未深查的角度：
+- `tests/ir_interpreter.rs`（80 行最小解释器子集，4 用例语义正确）
+- `Resources/` 下示例（仓库无 PDF 27 个示例，仅 DESIGN_REPORT 与图片）
+- `Easy_Server` `POST /api/analyze` + `index.html` 端到端真链路（JSON 字段完全对齐）
+- `types.rs::compatible` 自反 / 对称 / Ref-Tuple-Array 边界
+- `ir.rs` op 集与 `semantic.rs::emit` 37 处全集交叉对比
+- `symbol.rs` push / pop / lookup 浅层（深嵌套早于 analyzer 在 parser 阶段栈溢出）
+- 11 种语义边界（for-array / for-range / break-with-value / 嵌套 tuple / 链调用返回 / …）
+
+## ✅ 本轮新观察 → 入 discussions.md
+
+- **C7-1 → D-14**：`Ref` 兼容性用精确相等，不允许 `&mut → &` 协变
+- **C7-2 → D-15**：ARRAY / TUPLE 四元式 arg1 用逗号拼接元素列表，偏离严格四元式
+- **C7-3 → D-16**：Parser / Analyzer 递归下降无 depth guard，100 层嵌套 stack overflow（健壮性）
+- **C7-4**：`loop { break 42; }` 末尾不可达 `GOTO L1` —— 效率瑕疵，未单列归档
+
+## 第七轮影响面
+
+修改文件：`discussions.md`、`bug_report.md`。
+回归结果：与第六轮相同；无新增 warning。
+
+**累积统计**：7 轮共修复 **29 条真 BUG**（#1-#16、R-1~R-6、R3-1~R3-7、R4-1、R5-1/2/4/7/9、R6-1），归档 **16 条设计偏差**（D-1~D-16）。第七轮符合"直到查不出来问题为止"的停止条件。
