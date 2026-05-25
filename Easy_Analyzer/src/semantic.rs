@@ -1087,7 +1087,15 @@ impl Analyzer {
 
     fn gen_expr(&mut self, expr: &Expr) -> ExprValue {
         match expr {
-            Expr::Number { value } => ExprValue::new(Type::I32, value.clone()),
+            Expr::Number { value } => {
+                if value.parse::<i32>().is_err() {
+                    self.error(format!(
+                        "整数字面量 `{}` 超出 i32 范围（规则 0.1）",
+                        value
+                    ));
+                }
+                ExprValue::new(Type::I32, value.clone())
+            }
             Expr::Identifier { name } => self.gen_identifier(name),
             Expr::Unary { op, expr } => self.gen_unary(*op, expr),
             Expr::Binary { left, op, right } => self.gen_binary(left, *op, right),
