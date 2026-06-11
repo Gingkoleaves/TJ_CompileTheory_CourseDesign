@@ -25,70 +25,70 @@
 \contentsline {section}{\numberline {6}语义分析主流程设计}{12}{section.6}%
 \contentsline {subsection}{\numberline {6.1}总入口与两阶段函数处理}{12}{subsection.6.1}%
 \contentsline {subsection}{\numberline {6.2}函数分析流程}{13}{subsection.6.2}%
-\contentsline {subsection}{\numberline {6.3}语句分派设计}{15}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.3}语句分派设计}{14}{subsection.6.3}%
 \contentsline {subsection}{\numberline {6.4}表达式求值结果设计}{15}{subsection.6.4}%
-\contentsline {subsection}{\numberline {6.5}错误恢复与深度保护}{16}{subsection.6.5}%
-\contentsline {section}{\numberline {7}强制规则的详细实现}{16}{section.7}%
-\contentsline {subsection}{\numberline {7.1}规则 0.x：变量属性、基础类型与左值}{16}{subsection.7.1}%
-\contentsline {subsubsection}{\numberline {7.1.1}规则 0.1：\texttt {mut} 可变属性}{16}{subsubsection.7.1.1}%
+\contentsline {subsection}{\numberline {6.5}错误恢复与深度保护}{15}{subsection.6.5}%
+\contentsline {section}{\numberline {7}强制规则的详细实现}{15}{section.7}%
+\contentsline {subsection}{\numberline {7.1}规则 0.x：变量属性、基础类型与左值}{15}{subsection.7.1}%
+\contentsline {subsubsection}{\numberline {7.1.1}规则 0.1：\texttt {mut} 可变属性}{15}{subsubsection.7.1.1}%
 \contentsline {subsubsection}{\numberline {7.1.2}规则 0.2：\texttt {i32} 基础类型}{16}{subsubsection.7.1.2}%
-\contentsline {subsubsection}{\numberline {7.1.3}规则 0.3：左值、可取引用与可取元素}{17}{subsubsection.7.1.3}%
-\contentsline {subsection}{\numberline {7.2}规则 1.x：基础程序、语句与返回}{17}{subsection.7.2}%
-\contentsline {subsubsection}{\numberline {7.2.1}规则 1.1：基础程序与函数声明}{17}{subsubsection.7.2.1}%
+\contentsline {subsubsection}{\numberline {7.1.3}规则 0.3：左值、可取引用与可取元素}{16}{subsubsection.7.1.3}%
+\contentsline {subsection}{\numberline {7.2}规则 1.x：基础程序、语句与返回}{16}{subsection.7.2}%
+\contentsline {subsubsection}{\numberline {7.2.1}规则 1.1：基础程序与函数声明}{16}{subsubsection.7.2.1}%
 \contentsline {subsubsection}{\numberline {7.2.2}规则 1.2：语句与空语句}{17}{subsubsection.7.2.2}%
-\contentsline {subsubsection}{\numberline {7.2.3}规则 1.3 与 1.5：返回语句与函数输出}{18}{subsubsection.7.2.3}%
-\contentsline {subsubsection}{\numberline {7.2.4}规则 1.4：函数输入参数}{18}{subsubsection.7.2.4}%
-\contentsline {subsection}{\numberline {7.3}规则 2.x：变量声明、类型推断与赋值}{18}{subsection.7.3}%
-\contentsline {subsubsection}{\numberline {7.3.1}规则 2.0 与 2.1：变量声明与变量声明语句}{18}{subsubsection.7.3.1}%
-\contentsline {subsubsection}{\numberline {7.3.2}规则 2.2：赋值语句}{19}{subsubsection.7.3.2}%
-\contentsline {subsubsection}{\numberline {7.3.3}变量初始化与类型推断的配合}{19}{subsubsection.7.3.3}%
-\contentsline {subsection}{\numberline {7.4}规则 3.x：表达式、运算与函数调用}{19}{subsection.7.4}%
-\contentsline {subsubsection}{\numberline {7.4.1}规则 3.1：基本表达式}{19}{subsubsection.7.4.1}%
-\contentsline {subsubsection}{\numberline {7.4.2}规则 3.2、3.3、3.4：比较、加减、乘除}{20}{subsubsection.7.4.2}%
-\contentsline {subsubsection}{\numberline {7.4.3}规则 3.5：函数调用}{20}{subsubsection.7.4.3}%
+\contentsline {subsubsection}{\numberline {7.2.3}规则 1.3 与 1.5：返回语句与函数输出}{17}{subsubsection.7.2.3}%
+\contentsline {subsubsection}{\numberline {7.2.4}规则 1.4：函数输入参数}{17}{subsubsection.7.2.4}%
+\contentsline {subsection}{\numberline {7.3}规则 2.x：变量声明、类型推断与赋值}{17}{subsection.7.3}%
+\contentsline {subsubsection}{\numberline {7.3.1}规则 2.0 与 2.1：变量声明与变量声明语句}{17}{subsubsection.7.3.1}%
+\contentsline {subsubsection}{\numberline {7.3.2}规则 2.2：赋值语句}{18}{subsubsection.7.3.2}%
+\contentsline {subsubsection}{\numberline {7.3.3}变量初始化与类型推断的配合}{18}{subsubsection.7.3.3}%
+\contentsline {subsection}{\numberline {7.4}规则 3.x：表达式、运算与函数调用}{18}{subsection.7.4}%
+\contentsline {subsubsection}{\numberline {7.4.1}规则 3.1：基本表达式}{18}{subsubsection.7.4.1}%
+\contentsline {subsubsection}{\numberline {7.4.2}规则 3.2、3.3、3.4：比较、加减、乘除}{19}{subsubsection.7.4.2}%
+\contentsline {subsubsection}{\numberline {7.4.3}规则 3.5：函数调用}{19}{subsubsection.7.4.3}%
 \contentsline {subsection}{\numberline {7.5}规则 4.1：\texttt {if} 选择结构}{20}{subsection.7.5}%
-\contentsline {subsection}{\numberline {7.6}规则 5.0 与 5.1：循环语句与 \texttt {while}}{21}{subsection.7.6}%
-\contentsline {section}{\numberline {8}扩展规则的实现与工程增强}{22}{section.8}%
-\contentsline {subsection}{\numberline {8.1}规则 4.2 与 4.3：\texttt {else} 与 \texttt {else if}}{22}{subsection.8.1}%
-\contentsline {subsection}{\numberline {8.2}规则 5.2、5.3、5.4：\texttt {for}、\texttt {loop}、\texttt {break}/\texttt {continue}}{22}{subsection.8.2}%
-\contentsline {subsubsection}{\numberline {8.2.1}\texttt {for} 循环}{22}{subsubsection.8.2.1}%
-\contentsline {subsubsection}{\numberline {8.2.2}\texttt {loop} 表达式}{23}{subsubsection.8.2.2}%
+\contentsline {subsection}{\numberline {7.6}规则 5.0 与 5.1：循环语句与 \texttt {while}}{20}{subsection.7.6}%
+\contentsline {section}{\numberline {8}扩展规则的实现与工程增强}{21}{section.8}%
+\contentsline {subsection}{\numberline {8.1}规则 4.2 与 4.3：\texttt {else} 与 \texttt {else if}}{21}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}规则 5.2、5.3、5.4：\texttt {for}、\texttt {loop}、\texttt {break}/\texttt {continue}}{21}{subsection.8.2}%
+\contentsline {subsubsection}{\numberline {8.2.1}\texttt {for} 循环}{21}{subsubsection.8.2.1}%
+\contentsline {subsubsection}{\numberline {8.2.2}\texttt {loop} 表达式}{22}{subsubsection.8.2.2}%
 \contentsline {subsubsection}{\numberline {8.2.3}\texttt {break} 与 \texttt {continue}}{23}{subsubsection.8.2.3}%
-\contentsline {subsection}{\numberline {8.3}规则 6.x：不可变变量、引用、可变引用与解引用}{24}{subsection.8.3}%
-\contentsline {subsubsection}{\numberline {8.3.1}不可变变量}{24}{subsubsection.8.3.1}%
-\contentsline {subsubsection}{\numberline {8.3.2}不可变引用与可变引用}{24}{subsubsection.8.3.2}%
-\contentsline {subsubsection}{\numberline {8.3.3}解引用读写}{24}{subsubsection.8.3.3}%
+\contentsline {subsection}{\numberline {8.3}规则 6.x：不可变变量、引用、可变引用与解引用}{23}{subsection.8.3}%
+\contentsline {subsubsection}{\numberline {8.3.1}不可变变量}{23}{subsubsection.8.3.1}%
+\contentsline {subsubsection}{\numberline {8.3.2}不可变引用与可变引用}{23}{subsubsection.8.3.2}%
+\contentsline {subsubsection}{\numberline {8.3.3}解引用读写}{23}{subsubsection.8.3.3}%
 \contentsline {subsection}{\numberline {8.4}规则 7.x：表达式块、\texttt {if} 表达式与 \texttt {loop} 表达式}{24}{subsection.8.4}%
-\contentsline {subsection}{\numberline {8.5}规则 8.x：数组类型、数组表达式与数组元素}{25}{subsection.8.5}%
+\contentsline {subsection}{\numberline {8.5}规则 8.x：数组类型、数组表达式与数组元素}{24}{subsection.8.5}%
 \contentsline {subsection}{\numberline {8.6}规则 9.x：元组类型、元组表达式与元组元素}{25}{subsection.8.6}%
-\contentsline {section}{\numberline {9}四元式设计与代码生成策略}{26}{section.9}%
-\contentsline {subsection}{\numberline {9.1}操作码设计}{26}{subsection.9.1}%
-\contentsline {subsection}{\numberline {9.2}临时变量与标签生成}{27}{subsection.9.2}%
-\contentsline {subsection}{\numberline {9.3}典型结构的 IR 模板}{27}{subsection.9.3}%
-\contentsline {subsubsection}{\numberline {9.3.1}函数调用模板}{27}{subsubsection.9.3.1}%
+\contentsline {section}{\numberline {9}四元式设计与代码生成策略}{25}{section.9}%
+\contentsline {subsection}{\numberline {9.1}操作码设计}{25}{subsection.9.1}%
+\contentsline {subsection}{\numberline {9.2}临时变量与标签生成}{26}{subsection.9.2}%
+\contentsline {subsection}{\numberline {9.3}典型结构的 IR 模板}{26}{subsection.9.3}%
+\contentsline {subsubsection}{\numberline {9.3.1}函数调用模板}{26}{subsubsection.9.3.1}%
 \contentsline {subsubsection}{\numberline {9.3.2}数组读写模板}{27}{subsubsection.9.3.2}%
-\contentsline {subsubsection}{\numberline {9.3.3}嵌套左值回写模板}{28}{subsubsection.9.3.3}%
-\contentsline {subsection}{\numberline {9.4}典型程序与四元式示例}{28}{subsection.9.4}%
-\contentsline {section}{\numberline {10}Web 服务与可视化设计}{29}{section.10}%
-\contentsline {subsection}{\numberline {10.1}后端 API 设计}{29}{subsection.10.1}%
-\contentsline {subsection}{\numberline {10.2}前端展示设计}{30}{subsection.10.2}%
-\contentsline {subsection}{\numberline {10.3}为何需要 Web 可视化}{30}{subsection.10.3}%
+\contentsline {subsubsection}{\numberline {9.3.3}嵌套左值回写模板}{27}{subsubsection.9.3.3}%
+\contentsline {subsection}{\numberline {9.4}典型程序与四元式示例}{27}{subsection.9.4}%
+\contentsline {section}{\numberline {10}Web 服务与可视化设计}{28}{section.10}%
+\contentsline {subsection}{\numberline {10.1}后端 API 设计}{28}{subsection.10.1}%
+\contentsline {subsection}{\numberline {10.2}前端展示设计}{29}{subsection.10.2}%
+\contentsline {subsection}{\numberline {10.3}为何需要 Web 可视化}{29}{subsection.10.3}%
 \contentsline {section}{\numberline {11}测试体系与验证分析}{30}{section.11}%
 \contentsline {subsection}{\numberline {11.1}测试文件组织}{30}{subsection.11.1}%
-\contentsline {subsection}{\numberline {11.2}强制规则覆盖验证}{31}{subsection.11.2}%
-\contentsline {subsection}{\numberline {11.3}IR 解释器验证的意义}{32}{subsection.11.3}%
+\contentsline {subsection}{\numberline {11.2}强制规则覆盖验证}{30}{subsection.11.2}%
+\contentsline {subsection}{\numberline {11.3}IR 解释器验证的意义}{31}{subsection.11.3}%
 \contentsline {subsection}{\numberline {11.4}多轮缺陷修复与回归保障}{32}{subsection.11.4}%
 \contentsline {section}{\numberline {12}作业要求与当前实现的对照分析}{32}{section.12}%
 \contentsline {subsection}{\numberline {12.1}强制规则对照说明}{32}{subsection.12.1}%
-\contentsline {subsection}{\numberline {12.2}扩展规则完成度分析}{33}{subsection.12.2}%
+\contentsline {subsection}{\numberline {12.2}扩展规则完成度分析}{32}{subsection.12.2}%
 \contentsline {section}{\numberline {13}存在的限制与后续改进方向}{33}{section.13}%
 \contentsline {subsection}{\numberline {13.1}当前实现的主要限制}{33}{subsection.13.1}%
-\contentsline {subsection}{\numberline {13.2}可继续深化的方向}{34}{subsection.13.2}%
+\contentsline {subsection}{\numberline {13.2}可继续深化的方向}{33}{subsection.13.2}%
 \contentsline {section}{\numberline {14}总结}{34}{section.14}%
-\contentsline {section}{\numberline {A}附录 A：强制规则实现对照表}{35}{section.A}%
+\contentsline {section}{\numberline {A}附录 A：强制规则实现对照表}{34}{section.A}%
 \contentsline {section}{\numberline {B}附录 B：扩展规则实现对照表}{36}{section.B}%
-\contentsline {section}{\numberline {C}附录 C：典型源码片段与分析说明}{38}{section.C}%
-\contentsline {subsection}{\numberline {C.1}函数调用与返回值检查示例}{38}{subsection.C.1}%
+\contentsline {section}{\numberline {C}附录 C：典型源码片段与分析说明}{37}{section.C}%
+\contentsline {subsection}{\numberline {C.1}函数调用与返回值检查示例}{37}{subsection.C.1}%
 \contentsline {subsection}{\numberline {C.2}引用与解引用示例}{38}{subsection.C.2}%
 \contentsline {subsection}{\numberline {C.3}数组与元组示例}{38}{subsection.C.3}%
-\contentsline {section}{\numberline {D}附录 D：测试与工程演进补充说明}{39}{section.D}%
+\contentsline {section}{\numberline {D}附录 D：测试与工程演进补充说明}{38}{section.D}%

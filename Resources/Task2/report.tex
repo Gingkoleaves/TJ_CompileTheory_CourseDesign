@@ -23,6 +23,7 @@
 \usepackage{tikz}
 \usepackage{makecell}
 \usepackage{fancyhdr}
+\usepackage{graphicx} % 必须引入
 
 % =========================
 % 页面设置
@@ -1194,7 +1195,21 @@ END_FUNC   calc _ _
     \item 扩展规则中的引用、数组、元组、\pkg{for}、\pkg{loop}、\pkg{break value} 等在多数代表性场景下可正常工作。
 \end{itemize}
 
-仓库 \pkg{README.md} 还记录了最近一次针对性测试结果：\pkg{requirements\_coverage} 为 8 个测试通过，\pkg{assignment2\_ppt\_matrix} 为 6 个测试通过。虽然本文在当前 shell 环境下未能重新运行 Cargo，但从源码与测试内容可以确认，这两组测试就是当前实现完成度最直接的证据来源。
+仓库 \pkg{README.md} 还记录了最近一次针对性测试结果：\pkg{requirements\_coverage} 为 8 个测试通过，\pkg{assignment2\_ppt\_matrix} 为 6 个测试通过，以下是测试结果运行：
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/test1.jpg}
+    \caption{requirements\_coverage 测试结果}
+    \label{fig:test1}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{figures/test2.jpg}
+    \caption{assignment2\_ppt\_matrix 测试结果}
+    \label{fig:test2}
+\end{figure}
 
 \subsection{IR 解释器验证的意义}
 
