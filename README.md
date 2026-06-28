@@ -1,4 +1,4 @@
-# TJ_CompileTheory
+# TJ_CompileTheory_CourseDesign
 
 这是编译原理课程大作业仓库，当前代码包含类 Rust 语言的词法分析、语法分析、语义分析与四元式中间代码生成，并提供一个本地 Web 展示页面。
 
